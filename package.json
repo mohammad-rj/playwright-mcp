@@ -1,7 +1,7 @@
 {
-  "name": "@playwright/mcp",
-  "version": "0.0.53",
-  "description": "Playwright Tools for MCP",
+  "name": "@playwright/mcp-custom",
+  "version": "0.0.53-custom",
+  "description": "Playwright Tools for MCP with Snapshot Caching",
   "mcpName": "com.microsoft/playwright-mcp",
   "repository": {
     "type": "git",
@@ -42,7 +42,8 @@
     "playwright-core": "1.58.0-alpha-1766189059000"
   },
   "bin": {
-    "mcp-server-playwright": "cli.js"
+    "mcp-server-playwright": "cli.js",
+    "mcp-server-playwright-custom": "custom-cli.js"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.24.0",

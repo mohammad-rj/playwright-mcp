@@ -1,12 +1,72 @@
-## Playwright MCP
+## Playwright MCP (Custom Fork with Snapshot Caching)
 
 A Model Context Protocol (MCP) server that provides browser automation capabilities using [Playwright](https://playwright.dev). This server enables LLMs to interact with web pages through structured accessibility snapshots, bypassing the need for screenshots or visually-tuned models.
+
+**This is a custom fork** that adds automatic snapshot caching to prevent token overflow on large pages.
 
 ### Key Features
 
 - **Fast and lightweight**. Uses Playwright's accessibility tree, not pixel-based input.
 - **LLM-friendly**. No vision models needed, operates purely on structured data.
 - **Deterministic tool application**. Avoids ambiguity common with screenshot-based approaches.
+- **🆕 Snapshot Caching**. Automatically caches large snapshots to prevent token overflow.
+
+### Snapshot Caching Feature
+
+When a page snapshot exceeds a configurable threshold (default: 300 lines), instead of returning the full snapshot which would consume excessive tokens:
+
+1. The snapshot is cached with a unique ID
+2. A summary is returned with:
+   - Page URL & title
+   - Total lines count
+   - Cache ID for retrieval
+   - Structure hints (main elements, interactive refs)
+3. Two new tools allow navigation of cached content
+
+#### New Tools
+
+**`get_cached_snapshot`** - Get specific lines from cached snapshot
+```json
+{
+  "cacheId": "abc123",
+  "startLine": 1,
+  "endLine": 100
+}
+```
+
+**`search_cached_snapshot`** - Search within cached snapshot
+```json
+{
+  "cacheId": "abc123",
+  "query": "button",
+  "maxResults": 10
+}
+```
+
+#### Configuration
+
+Use `--max-snapshot-lines` to configure the threshold:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "node",
+      "args": [
+        "/path/to/playwright-mcp-custom/custom-cli.js",
+        "--max-snapshot-lines", "500"
+      ]
+    }
+  }
+}
+```
+
+#### Cache Settings
+
+- **maxLines**: 300 (trigger threshold)
+- **maxCacheSize**: 50 snapshots in memory
+- **cacheExpiry**: 30 minutes
+- **defaultPageSize**: 100 lines per request
 
 ### Requirements
 - Node.js 18 or newer
