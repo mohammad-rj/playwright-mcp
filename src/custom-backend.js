@@ -27,7 +27,6 @@ const { Response: OriginalResponse } = require(path.join(mcpPath, 'browser', 're
 const snapshotCache = require('./snapshot-cache');
 const recordingManager = require('./recording-manager');
 const { createRecordingTools } = require('./recording-tools');
-const { createConsoleTools } = require('./console-tools');
 const outputCache = require('./output-cache');
 
 // Patched Response class - handles all large outputs
@@ -218,21 +217,14 @@ class CustomBrowserServerBackend {
     
     // Get custom tools
     const recordingTools = createRecordingTools();
-    const consoleTools = createConsoleTools();
-    
-    // Filter out original browser_console_messages (we override it)
-    const originalTools = filteredTools(config).filter(
-      t => t.schema.name !== 'browser_console_messages'
-    );
     
     this._tools = [
-      ...originalTools,
+      ...filteredTools(config),
       getCachedSnapshotTool,
       searchCachedSnapshotTool,
       getCachedOutputTool,
       searchCachedOutputTool,
-      ...recordingTools,
-      ...consoleTools
+      ...recordingTools
     ];
   }
 
