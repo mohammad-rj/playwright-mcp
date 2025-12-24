@@ -8,11 +8,13 @@
 
 const recordingManager = require('./recording-manager');
 
+// Use zod from playwright-core bundle (compatible with zodToJsonSchema)
+const { z } = require('playwright-core/lib/mcpBundle');
+
 /**
- * Get zod from playwright internals
- * @param {string} mcpPath
+ * Create recording tools
  */
-function createRecordingTools(mcpPath, z) {
+function createRecordingTools() {
   
   /**
    * Helper to get snapshot from page

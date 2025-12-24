@@ -9,11 +9,13 @@
  */
 
 const path = require('path');
-const z = require('zod');
 
-// Direct paths to playwright internals (bypass exports restriction)
+// Direct paths to playwright internals
 const playwrightPath = path.dirname(require.resolve('playwright/package.json'));
 const mcpPath = path.join(playwrightPath, 'lib', 'mcp');
+
+// Use zod from playwright-core bundle (compatible with zodToJsonSchema)
+const { z } = require('playwright-core/lib/mcpBundle');
 
 const { Context } = require(path.join(mcpPath, 'browser', 'context'));
 const { logUnhandledError } = require(path.join(mcpPath, 'log'));
@@ -135,7 +137,7 @@ class CustomBrowserServerBackend {
     this._browserContextFactory = factory;
     
     // Get recording tools
-    const recordingTools = createRecordingTools(mcpPath, z);
+    const recordingTools = createRecordingTools();
     
     this._tools = [
       ...filteredTools(config),
