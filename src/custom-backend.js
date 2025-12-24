@@ -1,8 +1,15 @@
 /**
- * Custom Browser Server Backend with snapshot caching
+ * Custom Browser Server Backend
+ * 
+ * Extends Playwright MCP with:
+ * - Snapshot caching for large pages
+ * - Recording system for debugging dynamic UI
+ * 
+ * @module custom-backend
  */
 
 const path = require('path');
+const z = require('zod');
 
 // Direct paths to playwright internals (bypass exports restriction)
 const playwrightPath = path.dirname(require.resolve('playwright/package.json'));
@@ -14,8 +21,10 @@ const { SessionLog } = require(path.join(mcpPath, 'browser', 'sessionLog'));
 const { filteredTools } = require(path.join(mcpPath, 'browser', 'tools'));
 const { toMcpTool } = require(path.join(mcpPath, 'sdk', 'tool'));
 const { Response: OriginalResponse } = require(path.join(mcpPath, 'browser', 'response'));
-const { z } = require(path.join(mcpPath, 'sdk', 'bundle'));
+
 const snapshotCache = require('./snapshot-cache');
+const recordingManager = require('./recording-manager');
+const { createRecordingTools } = require('./recording-tools');
 
 // Patched Response class
 class PatchedResponse extends OriginalResponse {
@@ -124,10 +133,15 @@ class CustomBrowserServerBackend {
   constructor(config, factory) {
     this._config = config;
     this._browserContextFactory = factory;
+    
+    // Get recording tools
+    const recordingTools = createRecordingTools(mcpPath, z);
+    
     this._tools = [
       ...filteredTools(config),
       getCachedSnapshotTool,
-      searchCachedSnapshotTool
+      searchCachedSnapshotTool,
+      ...recordingTools
     ];
   }
 
@@ -172,6 +186,8 @@ class CustomBrowserServerBackend {
   }
 
   serverClosed() {
+    // Cleanup recordings on browser close
+    recordingManager.cleanupAll();
     this._context?.dispose().catch(logUnhandledError);
   }
 }

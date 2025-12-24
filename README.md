@@ -1,8 +1,8 @@
-## Playwright MCP (Custom Fork with Snapshot Caching)
+## Playwright MCP (Custom Fork)
 
 A Model Context Protocol (MCP) server that provides browser automation capabilities using [Playwright](https://playwright.dev). This server enables LLMs to interact with web pages through structured accessibility snapshots, bypassing the need for screenshots or visually-tuned models.
 
-**This is a custom fork** that adds automatic snapshot caching to prevent token overflow on large pages.
+**This is a custom fork** with enhanced features for handling large pages and debugging dynamic UI.
 
 ### Key Features
 
@@ -10,8 +10,69 @@ A Model Context Protocol (MCP) server that provides browser automation capabilit
 - **LLM-friendly**. No vision models needed, operates purely on structured data.
 - **Deterministic tool application**. Avoids ambiguity common with screenshot-based approaches.
 - **🆕 Snapshot Caching**. Automatically caches large snapshots to prevent token overflow.
+- **🆕 Recording System**. Record and analyze UI state changes over time for debugging.
 
-### Snapshot Caching Feature
+---
+
+## 🎬 Recording System
+
+Record browser state changes after actions to debug dynamic UI, loading states, animations, and async updates.
+
+### How It Works
+
+1. Execute an action (click, type, navigate)
+2. Automatically capture snapshots at intervals (default: 100ms)
+3. Detect significant events (loading, dialogs, errors)
+4. Analyze changes with diff and search tools
+
+### Recording Tools
+
+| Tool | Description |
+|------|-------------|
+| `browser_action_record` | Execute action and record snapshots |
+| `browser_recording_diff` | Calculate diff between snapshots |
+| `browser_recording_snapshot` | Read a specific snapshot |
+| `browser_recording_search` | Search across all snapshots |
+| `browser_recording_info` | Get recording metadata |
+| `browser_recording_list` | List all recordings |
+| `browser_recording_delete` | Delete a recording |
+
+### Example Usage
+
+```
+// Record a click action
+browser_action_record {
+  "action": "click",
+  "ref": "abc123",
+  "element": "Submit button",
+  "durationMs": 5000,
+  "intervalMs": 100
+}
+
+// View what changed
+browser_recording_diff {
+  "recordingId": "rec_xxx",
+  "index": 5
+}
+
+// Search for specific content
+browser_recording_search {
+  "recordingId": "rec_xxx",
+  "query": "error"
+}
+```
+
+### Recording Settings
+
+- **maxRecordings**: 5 concurrent (LRU eviction)
+- **maxSnapshots**: 200 per recording
+- **defaultDuration**: 10 seconds
+- **defaultInterval**: 100ms
+- **idleStop**: 2 seconds without changes
+
+---
+
+## 📦 Snapshot Caching
 
 When a page snapshot exceeds a configurable threshold (default: 300 lines), instead of returning the full snapshot which would consume excessive tokens:
 
