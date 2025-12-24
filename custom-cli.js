@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Custom Playwright MCP CLI with snapshot caching
+ * Custom Playwright MCP CLI with snapshot caching and recording
  */
 
 const path = require('path');
@@ -14,6 +14,7 @@ const { program } = require(path.join(playwrightCorePath, 'lib', 'utilsBundle'))
 const { resolveConfig } = require(path.join(mcpPath, 'browser', 'config'));
 const { contextFactory } = require(path.join(mcpPath, 'browser', 'browserContextFactory'));
 const mcpServer = require(path.join(mcpPath, 'sdk', 'server'));
+const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { CustomBrowserServerBackend } = require('./src/custom-backend');
 
 const packageJSON = require('./package.json');
@@ -54,9 +55,8 @@ program
 
     const connection = await createCustomConnection(config);
     
-    // Stdio transport (default for MCP) - from bundle
-    const mcpBundle = require(path.join(mcpPath, 'sdk', 'bundle'));
-    const transport = new mcpBundle.StdioServerTransport();
+    // Stdio transport for MCP
+    const transport = new StdioServerTransport();
     await connection.connect(transport);
   });
 
