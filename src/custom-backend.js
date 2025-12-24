@@ -28,16 +28,18 @@ const snapshotCache = require('./snapshot-cache');
 const recordingManager = require('./recording-manager');
 const { createRecordingTools } = require('./recording-tools');
 const { createConsoleTools } = require('./console-tools');
+const outputCache = require('./output-cache');
 
-// Patched Response class
+// Patched Response class - handles all large outputs
 class PatchedResponse extends OriginalResponse {
   serialize(options = {}) {
     const result = super.serialize(options);
     
     if (result.content?.[0]?.type === 'text') {
-      const text = result.content[0].text;
-      const yamlMatch = text.match(/```yaml\n([\s\S]*?)\n```/);
+      let text = result.content[0].text;
       
+      // 1. Handle snapshot caching (YAML blocks)
+      const yamlMatch = text.match(/```yaml\n([\s\S]*?)\n```/);
       if (yamlMatch?.[1] && snapshotCache.needsPagination(yamlMatch[1])) {
         const snapshotContent = yamlMatch[1];
         const urlMatch = text.match(/- Page URL: (.+)/);
@@ -53,10 +55,19 @@ class PatchedResponse extends OriginalResponse {
           cacheId, totalLines, url, title, structureHints
         );
         
-        result.content[0].text = text.replace(
+        text = text.replace(
           /- Page Snapshot:\n```yaml\n[\s\S]*?\n```/,
           paginationMsg
         );
+        result.content[0].text = text;
+        return result;
+      }
+      
+      // 2. Handle any other large output (console, network, etc.)
+      if (outputCache.needsCaching(text)) {
+        const toolName = this._name || 'unknown';
+        const { cacheId, totalLines, preview } = outputCache.cacheOutput(text, toolName);
+        result.content[0].text = outputCache.formatCacheMessage(cacheId, totalLines, toolName, preview);
       }
     }
     
@@ -132,6 +143,74 @@ const searchCachedSnapshotTool = {
   }
 };
 
+// Universal output cache tools
+const getCachedOutputTool = {
+  schema: {
+    name: 'get_cached_output',
+    title: 'Get cached output',
+    description: 'Get specific lines from any cached large output.',
+    inputSchema: z.object({
+      cacheId: z.string().describe('Cache ID from large output'),
+      startLine: z.number().optional().describe('Starting line (1-indexed)'),
+      endLine: z.number().optional().describe('Ending line (inclusive)')
+    }),
+    type: 'readOnly'
+  },
+  capability: 'core',
+  handle: async (context, params, response) => {
+    const result = outputCache.getPaginatedContent(
+      params.cacheId,
+      params.startLine || 1,
+      params.endLine
+    );
+
+    if (result.error) {
+      response.addError(result.error);
+      return;
+    }
+
+    let text = `## Output (${result.startLine}-${result.endLine} of ${result.totalLines})\n\n`;
+    text += '```\n' + result.content + '\n```';
+    if (result.hasMore) {
+      text += `\n\n_More available. Next: startLine=${result.endLine + 1}_`;
+    }
+    response.addResult(text);
+  }
+};
+
+const searchCachedOutputTool = {
+  schema: {
+    name: 'search_cached_output',
+    title: 'Search cached output',
+    description: 'Search for text within any cached large output.',
+    inputSchema: z.object({
+      cacheId: z.string().describe('Cache ID from large output'),
+      query: z.string().describe('Text to search for'),
+      maxResults: z.number().optional().describe('Max results (default: 20)')
+    }),
+    type: 'readOnly'
+  },
+  capability: 'core',
+  handle: async (context, params, response) => {
+    const result = outputCache.searchInCache(
+      params.cacheId,
+      params.query,
+      params.maxResults || 20
+    );
+
+    if (result.error) {
+      response.addError(result.error);
+      return;
+    }
+
+    let text = `## Search "${result.query}" - ${result.totalMatches} matches\n\n`;
+    for (const match of result.results) {
+      text += `**L${match.line}:** ${match.content}\n`;
+    }
+    response.addResult(text);
+  }
+};
+
 class CustomBrowserServerBackend {
   constructor(config, factory) {
     this._config = config;
@@ -150,6 +229,8 @@ class CustomBrowserServerBackend {
       ...originalTools,
       getCachedSnapshotTool,
       searchCachedSnapshotTool,
+      getCachedOutputTool,
+      searchCachedOutputTool,
       ...recordingTools,
       ...consoleTools
     ];
