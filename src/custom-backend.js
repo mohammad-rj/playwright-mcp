@@ -4,6 +4,7 @@
  * Extends Playwright MCP with:
  * - Snapshot caching for large pages
  * - Recording system for debugging dynamic UI
+ * - Tab isolation for multi-agent support
  * 
  * @module custom-backend
  */
@@ -20,7 +21,6 @@ const { z } = require('playwright-core/lib/mcpBundle');
 const { Context } = require(path.join(mcpPath, 'browser', 'context'));
 const { logUnhandledError } = require(path.join(mcpPath, 'log'));
 const { SessionLog } = require(path.join(mcpPath, 'browser', 'sessionLog'));
-const { filteredTools } = require(path.join(mcpPath, 'browser', 'tools'));
 const { toMcpTool } = require(path.join(mcpPath, 'sdk', 'tool'));
 const { Response: OriginalResponse } = require(path.join(mcpPath, 'browser', 'response'));
 
@@ -28,6 +28,7 @@ const snapshotCache = require('./snapshot-cache');
 const recordingManager = require('./recording-manager');
 const { createRecordingTools } = require('./recording-tools');
 const outputCache = require('./output-cache');
+const { createTabAwareTools, createEnhancedTabsTool } = require('./tab-isolation');
 
 // Patched Response class - handles all large outputs
 class PatchedResponse extends OriginalResponse {
@@ -218,8 +219,13 @@ class CustomBrowserServerBackend {
     // Get custom tools
     const recordingTools = createRecordingTools();
     
+    // Use tab-aware tools instead of original filteredTools
+    const tabAwareTools = createTabAwareTools(config);
+    const enhancedTabsTool = createEnhancedTabsTool();
+    
     this._tools = [
-      ...filteredTools(config),
+      ...tabAwareTools,
+      enhancedTabsTool,
       getCachedSnapshotTool,
       searchCachedSnapshotTool,
       getCachedOutputTool,
