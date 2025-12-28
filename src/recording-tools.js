@@ -72,6 +72,7 @@ function createRecordingTools() {
       title: 'Record browser action',
       description: 'Execute an action and record snapshots over time to capture UI state changes. Use for debugging dynamic content, animations, loading states, or async updates.',
       inputSchema: z.object({
+        tabId: z.number().describe('Tab ID to operate on. REQUIRED. Get this from browser_tabs(action="new").'),
         action: z.enum(['click', 'type', 'navigate', 'press_key', 'wait']).describe('Action to perform'),
         ref: z.string().optional().describe('Element ref for click/type actions'),
         element: z.string().optional().describe('Element description for logging'),
@@ -86,6 +87,12 @@ function createRecordingTools() {
     },
     capability: 'core',
     handle: async (context, params, response) => {
+      // Validate tabId is provided
+      if (params.tabId === undefined || params.tabId === null) {
+        response.addError('tabId is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.');
+        return;
+      }
+      
       // Validate and clamp parameters
       const durationMs = Math.min(params.durationMs || 10000, 30000);
       const intervalMs = Math.max(params.intervalMs || 100, 50);
@@ -93,6 +100,7 @@ function createRecordingTools() {
       
       // Create recording
       const recordingId = recordingManager.createRecording(params.action, {
+        tabId: params.tabId,
         action: params.action,
         ref: params.ref,
         element: params.element,
@@ -101,28 +109,23 @@ function createRecordingTools() {
         key: params.key
       });
       
-      // Get page
+      // Get page from specified tab
       let page = null;
       try {
-        const tab = context.currentTab();
-        if (tab?.page) {
-          page = tab.page;
-        }
-      } catch (e) {
-        // Try alternative method
-        try {
-          const tab = await context.ensureTab();
+        const tabs = context.tabs();
+        if (params.tabId >= 0 && params.tabId < tabs.length) {
+          const tab = tabs[params.tabId];
           if (tab?.page) {
             page = tab.page;
           }
-        } catch (e2) {
-          // Ignore
         }
+      } catch (e) {
+        // Ignore
       }
       
       if (!page) {
         recordingManager.stopRecording(recordingId, 'error');
-        response.addError('No active page. Use browser_navigate first.');
+        response.addError(`Tab ${params.tabId} not found or has no page. It may have been closed.`);
         return;
       }
       

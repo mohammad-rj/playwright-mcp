@@ -4,6 +4,10 @@
  * Provides tab-aware tool wrappers that allow multi-agent browser access.
  * Each agent can work on its own tab without interfering with others.
  * 
+ * SECURITY: tabId is REQUIRED for all tab-aware tools.
+ * This prevents agents from accidentally modifying other agents' tabs.
+ * Agents must first call browser_tabs(action="new") to get their tabId.
+ * 
  * @module tab-isolation
  */
 
@@ -16,21 +20,22 @@ const mcpPath = path.join(playwrightPath, 'lib', 'mcp');
 const { filteredTools } = require(path.join(mcpPath, 'browser', 'tools'));
 
 /**
- * Schema for tabId parameter - added to all tab-aware tools
+ * Schema for tabId parameter - REQUIRED for all tab-aware tools
  */
-const tabIdSchema = z.number().optional().describe(
-  'Tab index to operate on. If not provided, uses current tab.'
+const tabIdSchema = z.number().describe(
+  'Tab ID to operate on. REQUIRED. Get this from browser_tabs(action="new").'
 );
 
 /**
  * Create a proxy context that returns a specific tab
  * @param {Context} context - Original context
- * @param {number|undefined} tabId - Tab index to use
+ * @param {number} tabId - Tab index to use (REQUIRED)
  * @returns {Object} Proxy context
  */
 function createTabProxyContext(context, tabId) {
-  if (tabId === undefined) {
-    return context;
+  // tabId is now required, no fallback to current tab
+  if (tabId === undefined || tabId === null) {
+    throw new Error('tabId is required. First call browser_tabs(action="new") to get your tab ID.');
   }
   
   return new Proxy(context, {
@@ -41,7 +46,7 @@ function createTabProxyContext(context, tabId) {
           if (tabId >= 0 && tabId < tabs.length) {
             return tabs[tabId];
           }
-          return target.currentTab();
+          throw new Error(`Tab ${tabId} not found. It may have been closed.`);
         };
       }
       
@@ -51,7 +56,7 @@ function createTabProxyContext(context, tabId) {
           if (tabId >= 0 && tabId < tabs.length) {
             return tabs[tabId];
           }
-          throw new Error(`Tab ${tabId} not found`);
+          throw new Error(`Tab ${tabId} not found. It may have been closed.`);
         };
       }
       
@@ -61,7 +66,7 @@ function createTabProxyContext(context, tabId) {
           if (tabId >= 0 && tabId < tabs.length) {
             return tabs[tabId];
           }
-          return await target.ensureTab();
+          throw new Error(`Tab ${tabId} not found. It may have been closed.`);
         };
       }
       
@@ -75,16 +80,16 @@ function createTabProxyContext(context, tabId) {
 }
 
 /**
- * Wrap a tool to support tabId parameter
+ * Wrap a tool to REQUIRE tabId parameter
  * @param {Object} tool - Original tool definition
- * @returns {Object} Wrapped tool with tabId support
+ * @returns {Object} Wrapped tool with required tabId
  */
 function wrapToolWithTabId(tool) {
   const originalSchema = tool.schema;
   const originalHandle = tool.handle;
   
   const newInputSchema = originalSchema.inputSchema.extend({
-    tabId: tabIdSchema
+    tabId: tabIdSchema  // Now required (not optional)
   });
   
   return {
@@ -95,12 +100,16 @@ function wrapToolWithTabId(tool) {
     },
     handle: async (context, params, response) => {
       const { tabId, ...restParams } = params;
-      const proxyContext = createTabProxyContext(context, tabId);
       
-      // Also patch the response's _context to use proxy
-      if (tabId !== undefined) {
-        response._context = proxyContext;
+      // Validate tabId is provided (zod should catch this, but double-check)
+      if (tabId === undefined || tabId === null) {
+        throw new Error(
+          'tabId is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.'
+        );
       }
+      
+      const proxyContext = createTabProxyContext(context, tabId);
+      response._context = proxyContext;
       
       return await originalHandle(proxyContext, restParams, response);
     }
@@ -158,7 +167,10 @@ function createTabAwareTools(config) {
 }
 
 /**
- * Enhanced browser_tabs tool that returns tabId on new tab creation
+ * Enhanced browser_tabs tool
+ * - 'new': Creates tab and returns tabId (only way to get a tabId)
+ * - 'close': Requires tabId to close (can only close your own tab)
+ * - 'list' and 'select' are REMOVED to prevent interference
  * @returns {Object} Enhanced tabs tool
  */
 function createEnhancedTabsTool() {
@@ -166,44 +178,50 @@ function createEnhancedTabsTool() {
     schema: {
       name: 'browser_tabs',
       title: 'Manage tabs',
-      description: 'List, create, close, or select a browser tab. When creating a new tab, returns the tabId for use with other tools.',
+      description: 'Create or close browser tabs. Use action="new" to create a tab and get your tabId. Use action="close" with your tabId to close it. You can only operate on tabs you created.',
       inputSchema: z.object({
-        action: z.enum(['list', 'new', 'close', 'select']).describe('Operation to perform'),
-        index: z.number().optional().describe('Tab index for close/select. If omitted for close, closes current tab.')
+        action: z.enum(['new', 'close']).describe('Operation: "new" to create tab, "close" to close your tab'),
+        tabId: z.number().optional().describe('Tab ID to close (required for close action)')
       }),
       type: 'action'
     },
     capability: 'core-tabs',
     handle: async (context, params, response) => {
       switch (params.action) {
-        case 'list': {
-          await context.ensureTab();
-          response.setIncludeTabs();
-          return;
-        }
-        
         case 'new': {
           await context.newTab();
           const newTabId = context.tabs().length - 1;
           
-          response.setIncludeTabs();
-          response.addResult(`\n**tabId: ${newTabId}** - Use this with other browser tools.`);
+          response.addResult(
+            `## Tab Created\n\n` +
+            `**Your tabId: ${newTabId}**\n\n` +
+            `Use this tabId with ALL browser tools:\n` +
+            `- \`browser_navigate(tabId=${newTabId}, url="...")\`\n` +
+            `- \`browser_snapshot(tabId=${newTabId})\`\n` +
+            `- \`browser_click(tabId=${newTabId}, ref="...", element="...")\`\n` +
+            `- \`browser_tabs(action="close", tabId=${newTabId})\` when done\n\n` +
+            `⚠️ tabId is REQUIRED for all browser operations.`
+          );
           return;
         }
         
         case 'close': {
-          await context.closeTab(params.index);
-          response.setIncludeFullSnapshot();
+          if (params.tabId === undefined) {
+            throw new Error('tabId is required for close action. Provide the tabId you received when creating the tab.');
+          }
+          
+          const tabs = context.tabs();
+          if (params.tabId < 0 || params.tabId >= tabs.length) {
+            throw new Error(`Tab ${params.tabId} not found. It may have already been closed.`);
+          }
+          
+          await context.closeTab(params.tabId);
+          response.addResult(`Tab ${params.tabId} closed.`);
           return;
         }
         
-        case 'select': {
-          if (params.index === undefined)
-            throw new Error('Tab index is required');
-          await context.selectTab(params.index);
-          response.setIncludeFullSnapshot();
-          return;
-        }
+        default:
+          throw new Error(`Unknown action: ${params.action}. Use "new" or "close".`);
       }
     }
   };
