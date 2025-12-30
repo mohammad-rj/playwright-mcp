@@ -21,22 +21,21 @@ Enables multiple agents to work on the same browser simultaneously, each on thei
 
 ### ⚠️ IMPORTANT: tabId is REQUIRED
 
-All browser tools **require** a `tabId` parameter. This prevents agents from accidentally modifying other agents' tabs.
+All browser tools **require** a `tabId` parameter (6-character string). This prevents agents from accidentally modifying other agents' tabs.
 
 ### Workflow
 
-1. **Create tab:** `browser_tabs(action="new")` → Returns your `tabId`
+1. **Create tab:** `browser_tabs(action="new")` → Returns your `tabId` (e.g., `"a3x9k2"`)
 2. **Use tab:** Pass `tabId` to ALL browser tools
-3. **Close tab:** `browser_tabs(action="close", tabId=X)` when done
+3. **Close tab:** `browser_tabs(action="close", tabId="a3x9k2")` when done
 
 ### Available Actions
 
 | Action | Description |
 |--------|-------------|
-| `new` | Create a new tab, returns `tabId` |
+| `new` | Create a new tab, returns 6-char `tabId` |
 | `close` | Close a tab (requires `tabId`) |
-
-Note: `list` and `select` actions are disabled to prevent interference between agents.
+| `list` | List all tabs with their IDs, titles, and URLs |
 
 ### Tools Requiring tabId
 
@@ -56,34 +55,38 @@ browser_run_code, browser_resize, browser_mouse_*
 ```
 // 1. Create your tab (REQUIRED first step)
 browser_tabs(action="new")
-// Response: "Your tabId: 2"
+// Response: "Your tabId: a3x9k2"
 
 // 2. Use your tab with ALL operations
-browser_navigate(tabId=2, url="https://example.com")
-browser_snapshot(tabId=2)
-browser_click(tabId=2, ref="abc", element="Submit button")
+browser_navigate(tabId="a3x9k2", url="https://example.com")
+browser_snapshot(tabId="a3x9k2")
+browser_click(tabId="a3x9k2", ref="abc", element="Submit button")
 
-// 3. Close when done
-browser_tabs(action="close", tabId=2)
+// 3. List all tabs
+browser_tabs(action="list")
+// Response: Table with ID, Title, URL
+
+// 4. Close when done
+browser_tabs(action="close", tabId="a3x9k2")
 ```
 
 ### Error Messages
 
 If you forget `tabId`:
 ```
-Error: tabId is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.
+Error: tabId (6-char string) is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.
 ```
 
 ### Multi-Agent Example
 
 ```
-Agent 1:                                Agent 2:
-─────────────────────────────────────   ─────────────────────────────────────
-browser_tabs(action="new") → tabId: 1   browser_tabs(action="new") → tabId: 2
-browser_navigate(tabId=1, url="...")    browser_navigate(tabId=2, url="...")
-browser_snapshot(tabId=1)               browser_snapshot(tabId=2)
-browser_click(tabId=1, ref="...", ...)  browser_click(tabId=2, ref="...", ...)
-browser_tabs(action="close", tabId=1)   browser_tabs(action="close", tabId=2)
+Agent 1:                                      Agent 2:
+───────────────────────────────────────────   ───────────────────────────────────────────
+browser_tabs(action="new") → tabId: "a3x9k2"  browser_tabs(action="new") → tabId: "b7m4p1"
+browser_navigate(tabId="a3x9k2", url="...")   browser_navigate(tabId="b7m4p1", url="...")
+browser_snapshot(tabId="a3x9k2")              browser_snapshot(tabId="b7m4p1")
+browser_click(tabId="a3x9k2", ref="...", ...) browser_click(tabId="b7m4p1", ref="...", ...)
+browser_tabs(action="close", tabId="a3x9k2")  browser_tabs(action="close", tabId="b7m4p1")
 ```
 
 Each agent only knows its own `tabId`, so they can't interfere with each other.
@@ -346,8 +349,9 @@ browser_recording_snapshot {
 
 | Tool | tabId | Description |
 |------|-------|-------------|
-| `browser_tabs(action="new")` | Returns tabId | Create new tab |
+| `browser_tabs(action="new")` | Returns tabId (6-char) | Create new tab |
 | `browser_tabs(action="close")` | Required | Close tab |
+| `browser_tabs(action="list")` | Not needed | List all tabs with IDs, titles, URLs |
 
 ### Recording Tools (use recordingId)
 

@@ -7,6 +7,7 @@
  */
 
 const recordingManager = require('./recording-manager');
+const { getTabByStringId } = require('./tab-isolation');
 
 // Use zod from playwright-core bundle (compatible with zodToJsonSchema)
 const { z } = require('playwright-core/lib/mcpBundle');
@@ -72,7 +73,7 @@ function createRecordingTools() {
       title: 'Record browser action',
       description: 'Execute an action and record snapshots over time to capture UI state changes. Use for debugging dynamic content, animations, loading states, or async updates.',
       inputSchema: z.object({
-        tabId: z.number().describe('Tab ID to operate on. REQUIRED. Get this from browser_tabs(action="new").'),
+        tabId: z.string().length(6).describe('Tab ID (6-char string) to operate on. REQUIRED. Get this from browser_tabs(action="new").'),
         action: z.enum(['click', 'type', 'navigate', 'press_key', 'wait']).describe('Action to perform'),
         ref: z.string().optional().describe('Element ref for click/type actions'),
         element: z.string().optional().describe('Element description for logging'),
@@ -88,8 +89,8 @@ function createRecordingTools() {
     capability: 'core',
     handle: async (context, params, response) => {
       // Validate tabId is provided
-      if (params.tabId === undefined || params.tabId === null) {
-        response.addError('tabId is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.');
+      if (!params.tabId || typeof params.tabId !== 'string' || params.tabId.length !== 6) {
+        response.addError('tabId (6-char string) is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.');
         return;
       }
       
@@ -109,23 +110,24 @@ function createRecordingTools() {
         key: params.key
       });
       
-      // Get page from specified tab
+      // Get page from specified tab using string ID
       let page = null;
       try {
-        const tabs = context.tabs();
-        if (params.tabId >= 0 && params.tabId < tabs.length) {
-          const tab = tabs[params.tabId];
-          if (tab?.page) {
-            page = tab.page;
-          }
+        const tab = getTabByStringId(context, params.tabId);
+        if (tab?.page) {
+          page = tab.page;
+        } else {
+          page = tab; // tab might be the page directly
         }
       } catch (e) {
-        // Ignore
+        recordingManager.stopRecording(recordingId, 'error');
+        response.addError(e.message);
+        return;
       }
       
       if (!page) {
         recordingManager.stopRecording(recordingId, 'error');
-        response.addError(`Tab ${params.tabId} not found or has no page. It may have been closed.`);
+        response.addError(`Tab "${params.tabId}" not found or has no page.`);
         return;
       }
       
