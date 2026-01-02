@@ -1,0 +1,12 @@
+{
+  "id": "rec_ef37df9a207e",
+  "actionType": "wait",
+  "actionParams": {
+    "action": "wait"
+  },
+  "startedAt": 1766936557292,
+  "endedAt": 1766936560506,
+  "stoppedReason": "timeout",
+  "totalSnapshots": 5,
+  "significantEvents": []
+}

@@ -1,0 +1,353 @@
+- generic [ref=e2]:
+  - iframe [ref=e4]:
+    - generic [active] [ref=f1e1]:
+      - contentinfo:
+        - paragraph: TradingView is interactive and has commands to use with a screen reader. The following is a list of keyboard commands available to interact on the platform
+        - list:
+          - listitem: Start using keyboard navigation mode. Press Alt + Z
+          - listitem: Quick search. Press Ctrl + K
+          - listitem: Change symbol. Start typing symbol name
+          - listitem: Change interval. Press number or comma
+          - listitem: Indicators, Metrics and Strategies. Press slash
+          - listitem: Open layout. Press period
+      - generic [ref=f1e2]:
+        - toolbar [ref=f1e6]:
+          - generic [ref=f1e10]:
+            - button "Symbol Search" [ref=f1e12]:
+              - img [ref=f1e13]:
+                - img [ref=f1e14]
+              - generic [ref=f1e16]: BTCUSDT.P
+            - generic [ref=f1e20]:
+              - radiogroup [ref=f1e21]:
+                - radio "1 minute" [checked] [ref=f1e22]:
+                  - generic [ref=f1e24]: 1m
+                - radio "5 minutes" [ref=f1e25]:
+                  - generic [ref=f1e27]: 5m
+                - radio "15 minutes" [ref=f1e28]:
+                  - generic [ref=f1e30]: 15m
+              - button "Time Interval" [ref=f1e31]:
+                - img [ref=f1e34]:
+                  - img [ref=f1e35]
+            - generic [ref=f1e40]:
+              - radiogroup [ref=f1e41]:
+                - radio "Candles" [checked] [ref=f1e42]:
+                  - img [ref=f1e43]:
+                    - img [ref=f1e44]
+                - radio "Line" [ref=f1e49]:
+                  - img [ref=f1e50]:
+                    - img [ref=f1e51]
+              - button "Bar's style" [ref=f1e53]:
+                - img [ref=f1e56]:
+                  - img [ref=f1e57]
+            - generic [ref=f1e61]:
+              - button "Indicators & Strategies" [ref=f1e63]:
+                - img [ref=f1e64]:
+                  - img [ref=f1e65]
+              - button "Indicator templates" [ref=f1e68]:
+                - img [ref=f1e70]:
+                  - img [ref=f1e71]
+            - generic "Click to add a position shape" [ref=f1e77] [cursor=pointer]: Debug
+            - button "tooltip for this dropdown" [ref=f1e81]:
+              - img [ref=f1e83]:
+                - img [ref=f1e84]
+            - generic "Toggle EPP Strategy Panel" [ref=f1e93]: EPP Panel
+            - generic [ref=f1e97]:
+              - button [disabled] [ref=f1e98]:
+                - img [ref=f1e99]:
+                  - img [ref=f1e100]
+              - button [disabled] [ref=f1e102]:
+                - img [ref=f1e103]:
+                  - img [ref=f1e104]
+            - generic [ref=f1e106]:
+              - button "Layout setup" [ref=f1e107]:
+                - img [ref=f1e108]:
+                  - img
+              - generic [ref=f1e110]:
+                - button "Save all charts for all symbols and intervals on your layout" [ref=f1e111]:
+                  - generic [ref=f1e113]:
+                    - generic [ref=f1e114]: Save
+                    - generic: Save
+                - button "Manage layouts" [ref=f1e116]:
+                  - img [ref=f1e119]:
+                    - img [ref=f1e120]
+            - generic [ref=f1e124]:
+              - button "Quick Search" [ref=f1e125]:
+                - img [ref=f1e126]:
+                  - img [ref=f1e127]
+              - button "Settings" [ref=f1e130]:
+                - img [ref=f1e131]:
+                  - img [ref=f1e132]
+              - button "Fullscreen mode" [ref=f1e136]:
+                - img [ref=f1e137]:
+                  - img [ref=f1e138]
+            - generic "Auto-Save is ON" [ref=f1e144]:
+              - img [ref=f1e145]
+        - generic [ref=f1e149]:
+          - toolbar [ref=f1e150]:
+            - generic [ref=f1e154]:
+              - generic [ref=f1e155]:
+                - generic [ref=f1e158]:
+                  - button "Cross" [pressed] [ref=f1e160]:
+                    - img [ref=f1e162]:
+                      - img [ref=f1e163]
+                  - button "Cursors" [pressed] [ref=f1e167]:
+                    - img [ref=f1e168]:
+                      - img [ref=f1e169]
+                - generic [ref=f1e173]:
+                  - button "Trend Line" [ref=f1e175]:
+                    - img [ref=f1e177]:
+                      - img [ref=f1e178]
+                  - button "Trend line tools" [ref=f1e182]:
+                    - img [ref=f1e183]:
+                      - img [ref=f1e184]
+                - generic [ref=f1e188]:
+                  - button "Fib Retracement" [ref=f1e190]:
+                    - img [ref=f1e192]:
+                      - img [ref=f1e193]
+                  - button "Gann and Fibonacci tools" [ref=f1e200]:
+                    - img [ref=f1e201]:
+                      - img [ref=f1e202]
+                - generic [ref=f1e206]:
+                  - button "XABCD Pattern" [ref=f1e208]:
+                    - img [ref=f1e210]:
+                      - img [ref=f1e211]
+                  - button "Patterns" [ref=f1e215]:
+                    - img [ref=f1e216]:
+                      - img [ref=f1e217]
+                - generic [ref=f1e221]:
+                  - button "Long Position" [ref=f1e223]:
+                    - img [ref=f1e225]:
+                      - img [ref=f1e226]
+                  - button "Forecasting and measurement tools" [ref=f1e229]:
+                    - img [ref=f1e230]:
+                      - img [ref=f1e231]
+                - generic [ref=f1e235]:
+                  - button "Brush" [ref=f1e237]:
+                    - img [ref=f1e239]:
+                      - img [ref=f1e240]
+                  - button "Geometric shapes" [ref=f1e244]:
+                    - img [ref=f1e245]:
+                      - img [ref=f1e246]
+                - generic [ref=f1e250]:
+                  - button "Text" [ref=f1e252]:
+                    - img [ref=f1e254]:
+                      - img [ref=f1e255]
+                  - button "Annotation tools" [ref=f1e257]:
+                    - img [ref=f1e258]:
+                      - img [ref=f1e259]
+                - generic [ref=f1e262]:
+                  - button "Icon" [ref=f1e264]:
+                    - img [ref=f1e266]:
+                      - img [ref=f1e267]
+                  - button "Icons" [ref=f1e269]:
+                    - img [ref=f1e270]:
+                      - img [ref=f1e271]
+              - generic [ref=f1e273]:
+                - button "Measure" [ref=f1e274]:
+                  - img [ref=f1e276]:
+                    - img [ref=f1e277]
+                - button "Zoom In" [ref=f1e279]:
+                  - img [ref=f1e281]:
+                    - img [ref=f1e282]
+              - generic [ref=f1e287]:
+                - generic [ref=f1e290]:
+                  - button "Magnet Mode snaps drawings placed near price bars to the closest OHLC value" [ref=f1e292]:
+                    - img [ref=f1e294]:
+                      - img [ref=f1e295]
+                  - button "Magnets" [ref=f1e299]:
+                    - img [ref=f1e300]:
+                      - img [ref=f1e301]
+                - button "Stay in Drawing Mode" [ref=f1e303]:
+                  - img [ref=f1e305]:
+                    - img [ref=f1e306]
+                - button "Lock all drawings" [ref=f1e308]:
+                  - img [ref=f1e310]:
+                    - img [ref=f1e311]
+                - generic [ref=f1e314]:
+                  - button "Hide all drawings" [ref=f1e316]:
+                    - img [ref=f1e318]:
+                      - img [ref=f1e319]
+                  - button "Hide options" [ref=f1e321]:
+                    - img [ref=f1e322]:
+                      - img [ref=f1e323]
+              - generic [ref=f1e327]:
+                - button "Remove 0 drawings" [ref=f1e329]:
+                  - img [ref=f1e331]:
+                    - img [ref=f1e332]
+                - button "Remove options" [ref=f1e334]:
+                  - img [ref=f1e335]:
+                    - img [ref=f1e336]
+          - button "Hide Drawings Toolbar" [ref=f1e340]:
+            - img [ref=f1e341]
+        - generic [ref=f1e345]:
+          - 'region "Chart #1" [ref=f1e348]':
+            - generic [ref=f1e352]:
+              - generic:
+                - generic:
+                  - toolbar:
+                    - generic:
+                      - generic [ref=f1e353]:
+                        - generic "Change symbol" [ref=f1e354]:
+                          - button "Change symbol" [ref=f1e355]: BTC/USDT Swap
+                        - text: ·
+                        - generic "Change interval" [ref=f1e356]:
+                          - text: ·
+                          - button "Change interval" [ref=f1e357]: "1"
+                        - text: ·
+                        - generic [ref=f1e358]:
+                          - text: ·
+                          - generic [ref=f1e359]: OKX
+                        - text: · ·
+                      - generic:
+                        - generic:
+                          - button "More":
+                            - generic:
+                              - img
+                      - img [ref=f1e363]
+                    - generic [ref=f1e366]:
+                      - generic [ref=f1e367]:
+                        - generic [ref=f1e368]: O
+                        - generic [ref=f1e369]: 87,879.6
+                      - generic [ref=f1e370]:
+                        - generic [ref=f1e371]: H
+                        - generic [ref=f1e372]: 87,879.7
+                      - generic [ref=f1e373]:
+                        - generic [ref=f1e374]: L
+                        - generic [ref=f1e375]: 87,879.6
+                      - generic [ref=f1e376]:
+                        - generic [ref=f1e377]: C
+                        - generic [ref=f1e378]: 87,879.7
+                      - generic [ref=f1e380]: 0.0 (0.00%)
+                  - generic [ref=f1e383]:
+                    - generic [ref=f1e385]:
+                      - generic [ref=f1e386]: −0.0
+                      - generic [ref=f1e387]: Sell
+                    - generic "Spread" [ref=f1e389]: "0.0"
+                    - generic [ref=f1e391]:
+                      - generic [ref=f1e392]: "0.0"
+                      - generic [ref=f1e393]: Buy
+                - generic:
+                  - button "Hide indicator legend" [ref=f1e394]:
+                    - img [ref=f1e396]
+                  - generic:
+                    - toolbar:
+                      - generic:
+                        - generic [ref=f1e400]: Volume
+                        - generic:
+                          - generic:
+                            - button "Hide":
+                              - generic:
+                                - img
+                            - button "Settings":
+                              - generic:
+                                - img
+                            - button "Remove":
+                              - generic:
+                                - img
+                            - button "More":
+                              - generic:
+                                - img
+                      - generic "Volume" [ref=f1e404]: "0.26"
+              - generic "Chart for OKX:BTCUSDT.P, 1 minute" [ref=f1e406]
+          - toolbar [ref=f1e420]:
+            - generic [ref=f1e422]:
+              - generic [ref=f1e423]:
+                - button "5 years in 1 week intervals" [ref=f1e424]:
+                  - generic [ref=f1e425]: 5y
+                - button "1 year in 1 week intervals" [ref=f1e426]:
+                  - generic [ref=f1e427]: 1y
+                - button "3 months in 1 hour intervals" [ref=f1e428]:
+                  - generic [ref=f1e429]: 3m
+                - button "1 month in 30 minutes intervals" [ref=f1e430]:
+                  - generic [ref=f1e431]: 1m
+                - button "5 days in 5 minutes intervals" [ref=f1e432]:
+                  - generic [ref=f1e433]: 5d
+                - button "1 day in 1 minute intervals" [ref=f1e434]:
+                  - generic [ref=f1e435]: 1d
+              - button "Go to" [ref=f1e438]:
+                - img [ref=f1e439]:
+                  - img [ref=f1e440]
+            - generic [ref=f1e442]:
+              - button "Timezone" [ref=f1e445]:
+                - generic [ref=f1e446]: 15:42:38 UTC
+              - button "Toggle Percentage" [ref=f1e450]:
+                - img [ref=f1e451]:
+                  - img [ref=f1e452]
+              - button "Toggle Log Scale" [ref=f1e458]:
+                - generic [ref=f1e459]: log
+              - button "Toggle Auto Scale" [pressed] [ref=f1e461]:
+                - generic [ref=f1e462]: auto
+      - alert
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - log:
+                      - list
+                  - generic:
+                    - log:
+                      - list
+  - generic [ref=e5]:
+    - generic [ref=e7]:
+      - generic [ref=e8]:
+        - generic [ref=e9] [cursor=pointer]: Editor
+        - generic [ref=e10] [cursor=pointer]: Executions
+        - generic [ref=e11] [cursor=pointer]: Report
+        - generic [ref=e12] [cursor=pointer]: Profiler
+        - generic [ref=e13] [cursor=pointer]: Chart
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - button "Float Window" [ref=e16] [cursor=pointer]:
+            - img [ref=e17]
+          - button "Dock to Left" [ref=e19] [cursor=pointer]:
+            - img [ref=e20]
+          - button "Dock to Bottom" [ref=e22] [cursor=pointer]:
+            - img [ref=e23]
+          - button "Dock to Right" [ref=e25] [cursor=pointer]:
+            - img [ref=e26]
+        - button "Fullscreen" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+        - button "Open in New Window" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+        - button "Collapse panel" [ref=e34] [cursor=pointer]:
+          - img [ref=e35]
+    - iframe [ref=e38]:
+      - generic [active] [ref=f2e1]:
+        - generic [ref=f2e3]:
+          - text: 
+          - generic [ref=f2e5]:
+            - generic [ref=f2e6]:
+              - heading "Chart Overlays" [level=3] [ref=f2e7]
+              - text: Display execution results on TradingView chart
+              - generic [ref=f2e8]:
+                - generic [ref=f2e9]: Single Chart
+                - generic [ref=f2e10]: "|"
+                - generic "OKX:BTCUSDT.P - 1" [ref=f2e11]: "Chart 1: BTCUSDT.P 1m"
+            - generic [ref=f2e12]:
+              - combobox [ref=f2e13] [cursor=pointer]:
+                - option "Select Execution..." [selected]
+              - button "Add to Chart" [ref=f2e14] [cursor=pointer]:
+                - img [ref=f2e15]
+                - text: Add to Chart
+              - button "Navigate to end of selected execution" [disabled]:
+                - img
+            - generic [ref=f2e17]:
+              - generic [ref=f2e18]: 📊
+              - paragraph [ref=f2e19]: No executions added to chart
+              - paragraph [ref=f2e20]: Select an execution above to display its indicators and trades on the chart
+            - generic [ref=f2e21]:
+              - generic [ref=f2e23] [cursor=pointer]:
+                - checkbox "Auto-navigate to execution time range" [checked] [ref=f2e24]
+                - generic [ref=f2e25]: Auto-navigate to execution time range
+              - generic [ref=f2e26]:
+                - generic [ref=f2e27]: "Max Shapes:"
+                - spinbutton "Max Shapes:" [ref=f2e28]: "2000"
+              - button "Refresh executions list" [ref=f2e29] [cursor=pointer]:
+                - img [ref=f2e30]
+        - text: 🔍
+        - generic [ref=f2e34]:
+          - alert
+          - alert
