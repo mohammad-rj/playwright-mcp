@@ -1,0 +1,13 @@
+{
+  "id": "rec_acd3becfc3d2",
+  "actionType": "wait",
+  "actionParams": {
+    "tabId": 1,
+    "action": "wait"
+  },
+  "startedAt": 1766937094304,
+  "endedAt": 1766937097631,
+  "stoppedReason": "timeout",
+  "totalSnapshots": 4,
+  "significantEvents": []
+}

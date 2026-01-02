@@ -91,6 +91,13 @@ browser_tabs(action="close", tabId="a3x9k2")  browser_tabs(action="close", tabId
 
 Each agent only knows its own `tabId`, so they can't interfere with each other.
 
+### User Manual Tab Handling
+
+The tab isolation system correctly handles when users manually open/close tabs in the browser:
+- Agent tabs remain stable when user opens/closes their own tabs
+- Registry automatically cleans up closed tabs
+- No interference between agent and user browser activity
+
 ---
 
 ## 📦 Snapshot Caching

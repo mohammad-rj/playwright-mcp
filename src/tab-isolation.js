@@ -51,27 +51,39 @@ const tabIdSchema = z.string().length(6).describe(
 );
 
 /**
- * Get tab page by string ID
+ * Get tab by string ID
  * @param {Context} context - Browser context
  * @param {string} tabId - 6-char tab ID
- * @returns {Page} Playwright page
+ * @returns {Tab} Playwright Tab object
  */
 function getTabByStringId(context, tabId) {
   const entry = tabRegistry.get(tabId);
   if (!entry) {
-    throw new Error(`Tab "${tabId}" not found. It may have been closed or never existed.`);
+    throw new Error(`Tab "${tabId}" not found. It may have been closed or never existed. Use browser_tabs(action="new") to create a new tab.`);
   }
   
-  // Verify the page still exists in context
-  const tabs = context.tabs();
-  const pageIndex = tabs.findIndex(t => t === entry.page);
-  if (pageIndex === -1) {
-    // Page was closed externally, clean up registry
+  // Check if page is still valid by trying to access it
+  const page = entry.page;
+  try {
+    // Try to check if page is closed - this works for Playwright Page objects
+    if (typeof page.isClosed === 'function' && page.isClosed()) {
+      tabRegistry.delete(tabId);
+      throw new Error(`Tab "${tabId}" was closed. Use browser_tabs(action="new") to create a new tab.`);
+    }
+    
+    // Try to access URL as another validity check
+    page.url();
+  } catch (e) {
+    if (e.message && e.message.includes('was closed')) {
+      throw e;
+    }
+    // Page object is invalid (browser closed or page destroyed)
     tabRegistry.delete(tabId);
-    throw new Error(`Tab "${tabId}" was closed.`);
+    throw new Error(`Tab "${tabId}" is no longer valid (browser may have been closed). Use browser_tabs(action="new") to create a new tab.`);
   }
   
-  return entry.page;
+  // Return the tab object for Playwright MCP compatibility
+  return entry.tab || entry.page;
 }
 
 /**
@@ -217,15 +229,32 @@ function createEnhancedTabsTool() {
     handle: async (context, params, response) => {
       switch (params.action) {
         case 'new': {
-          const page = await context.newTab();
+          const tab = await context.newTab();
           const tabId = generateTabId();
+          
+          // Get the actual Playwright Page from the Tab object
+          const page = tab.page || tab;
           
           // Register the tab
           tabRegistry.set(tabId, {
             page: page,
+            tab: tab,
             createdAt: new Date(),
             title: 'New Tab'
           });
+          
+          // Auto-cleanup when THIS specific page is closed
+          const pageRef = page; // Capture reference
+          const thisTabId = tabId; // Capture tabId
+          if (typeof page.on === 'function') {
+            page.on('close', () => {
+              // Only delete if this is still the same page in registry
+              const currentEntry = tabRegistry.get(thisTabId);
+              if (currentEntry && currentEntry.page === pageRef) {
+                tabRegistry.delete(thisTabId);
+              }
+            });
+          }
           
           // Update title when page loads
           page.on('load', async () => {
@@ -262,9 +291,9 @@ function createEnhancedTabsTool() {
             throw new Error(`Tab "${params.tabId}" not found. It may have already been closed.`);
           }
           
-          // Find the tab index
+          // Find the tab index - compare with tab object OR page
           const tabs = context.tabs();
-          const tabIndex = tabs.findIndex(t => t === entry.page);
+          const tabIndex = tabs.findIndex(t => t === entry.tab || t === entry.page || t.page === entry.page);
           
           if (tabIndex === -1) {
             tabRegistry.delete(params.tabId);
@@ -284,7 +313,9 @@ function createEnhancedTabsTool() {
           
           // Clean up registry and build list
           for (const [id, entry] of tabRegistry.entries()) {
-            const tabIndex = tabs.findIndex(t => t === entry.page);
+            // Find by comparing tab object OR page object
+            const tabIndex = tabs.findIndex(t => t === entry.tab || t === entry.page || t.page === entry.page);
+            
             if (tabIndex === -1) {
               // Tab was closed externally
               tabRegistry.delete(id);
