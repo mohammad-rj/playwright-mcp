@@ -38,7 +38,17 @@ class PatchedResponse extends OriginalResponse {
     if (result.content?.[0]?.type === 'text') {
       let text = result.content[0].text;
       
-      // 1. Handle snapshot caching (YAML blocks)
+      // FIRST: Check if ENTIRE output is too large (regardless of content type)
+      // This catches cases where console messages + snapshot together are huge
+      if (outputCache.needsCaching(text)) {
+        const toolName = this._name || 'unknown';
+        const { cacheId, totalLines, preview } = outputCache.cacheOutput(text, toolName);
+        result.content[0].text = outputCache.formatCacheMessage(cacheId, totalLines, toolName, preview);
+        return result;
+      }
+      
+      // SECOND: Handle snapshot-specific caching (YAML blocks only)
+      // This is for when snapshot alone is large but total output is manageable
       const yamlMatch = text.match(/```yaml\n([\s\S]*?)\n```/);
       if (yamlMatch?.[1] && snapshotCache.needsPagination(yamlMatch[1])) {
         const snapshotContent = yamlMatch[1];
@@ -60,14 +70,6 @@ class PatchedResponse extends OriginalResponse {
           paginationMsg
         );
         result.content[0].text = text;
-        return result;
-      }
-      
-      // 2. Handle any other large output (console, network, etc.)
-      if (outputCache.needsCaching(text)) {
-        const toolName = this._name || 'unknown';
-        const { cacheId, totalLines, preview } = outputCache.cacheOutput(text, toolName);
-        result.content[0].text = outputCache.formatCacheMessage(cacheId, totalLines, toolName, preview);
       }
     }
     
