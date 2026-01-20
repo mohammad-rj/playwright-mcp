@@ -50,11 +50,14 @@ program
 
     const config = {};
     if (options.browser) config.browser = { browserName: options.browser };
+    if (process.env.PLAYWRIGHT_MCP_USER_DATA_DIR) {
+      config.browser = { ...config.browser, userDataDir: process.env.PLAYWRIGHT_MCP_USER_DATA_DIR };
+    }
     if (options.headless) config.browser = { ...config.browser, headless: true };
     if (options.vision) config.vision = true;
 
     const connection = await createCustomConnection(config);
-    
+
     // Stdio transport for MCP
     const transport = new StdioServerTransport();
     await connection.connect(transport);
