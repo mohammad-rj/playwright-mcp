@@ -21,7 +21,28 @@ const packageJSON = require('./package.json');
 
 async function createCustomConnection(userConfig = {}) {
   const config = await resolveConfig(userConfig);
-  const factory = contextFactory(config);
+  const originalFactory = contextFactory(config);
+
+  // Robust factory object that falls back to isolated mode if userDataDir is locked
+  const factory = {
+    createContext: async (options) => {
+      try {
+        return await originalFactory.createContext(options);
+      } catch (e) {
+        if (e.message.includes('already in use') && config.browser?.userDataDir) {
+          console.error(`\n[WARNING] User Data Directory is locked by another session: ${config.browser.userDataDir}`);
+          console.error(`[WARNING] Falling back to isolated temporary directory to prevent crash.\n`);
+
+          const isolatedConfig = { ...config, browser: { ...config.browser } };
+          delete isolatedConfig.browser.userDataDir;
+
+          return await contextFactory(isolatedConfig).createContext(options);
+        }
+        throw e;
+      }
+    }
+  };
+
   return mcpServer.createServer(
     'Playwright-Custom',
     packageJSON.version,

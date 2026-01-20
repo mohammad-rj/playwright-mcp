@@ -33,9 +33,17 @@ const HEARTBEAT_TIMEOUT = 5 * 60 * 1000; // 5 minutes inactivity = zombie
  */
 async function updateHeartbeat(page, id) {
   try {
+    const now = Date.now();
     await page.evaluate((m, id, time) => {
       window[m] = { id, lastActivity: time };
-    }, MARKER_NAME, id, Date.now()).catch(() => { });
+    }, MARKER_NAME, id, now).catch(() => { });
+
+    // Also update and persist in registry for other sessions to see
+    const entry = tabRegistry.get(id);
+    if (entry) {
+      entry.lastActivity = new Date(now);
+      saveRegistry();
+    }
   } catch (e) { /* Ignore errors if page is closing */ }
 }
 
@@ -58,6 +66,7 @@ async function syncRegistryWithBrowser(context) {
 
     for (const [id, info] of Object.entries(data)) {
       // Find a tab that has this ID in its window metadata
+      let found = false;
       for (const tab of tabs) {
         try {
           const page = tab.page || tab;
@@ -69,11 +78,23 @@ async function syncRegistryWithBrowser(context) {
               page: page,
               tab: tab,
               createdAt: new Date(info.createdAt),
+              lastActivity: info.lastActivity ? new Date(info.lastActivity) : new Date(info.createdAt),
               title: info.title
             });
+            found = true;
             break;
           }
         } catch (e) { /* Tab might be unreachable */ }
+      }
+
+      // If NOT found in physical tabs, it might belong to another session
+      if (!found) {
+        tabRegistry.set(id, {
+          createdAt: new Date(info.createdAt),
+          lastActivity: info.lastActivity ? new Date(info.lastActivity) : new Date(info.createdAt),
+          title: info.title,
+          isRemote: true // Flag to indicate it's in another process
+        });
       }
     }
   } catch (e) {
@@ -90,7 +111,8 @@ function saveRegistry() {
     for (const [id, entry] of tabRegistry.entries()) {
       data[id] = {
         createdAt: entry.createdAt,
-        title: entry.title
+        title: entry.title,
+        lastActivity: entry.lastActivity
       };
     }
     const dir = path.dirname(STORAGE_PATH);
@@ -321,9 +343,60 @@ function createEnhancedTabsTool() {
 
       switch (params.action) {
         case 'new': {
-          const tab = await context.newTab();
+          let tabs = context.tabs();
+          let debugMsg = `Total visible tabs initially: ${tabs.length}`;
+          if (tabs.length === 0) {
+            await new Promise(r => setTimeout(r, 300));
+            tabs = context.tabs();
+            debugMsg += ` -> after wait: ${tabs.length}`;
+          }
+          let tab;
+          let isReclaimed = false;
+
+          // Optimization: Search for any existing blank, unmanaged tab to reuse
+          for (const candidate of tabs) {
+            const page = candidate.page || candidate;
+            const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+            const url = page.url();
+
+            const isBlank = (
+              url === 'about:blank' ||
+              url === '' ||
+              url.startsWith('chrome://newtab') ||
+              url.startsWith('chrome://new-tab-page')
+            );
+
+            if (!marker && isBlank) {
+              tab = candidate;
+              break;
+            }
+          }
+
+          if (!tab) {
+            tab = await context.newTab();
+          }
+
           const tabId = generateTabId();
           const page = tab.page || tab;
+
+          // Aggressive Cleanup: If we now have multiple tabs and some are still blank/unmanaged, close them
+          // to prevent that annoying "extra blank tab" from staying open.
+          const finalTabs = context.tabs();
+          if (finalTabs.length > 1) {
+            for (let i = 0; i < finalTabs.length; i++) {
+              const t = finalTabs[i];
+              if (t === tab) continue; // Keep our new tab
+
+              const p = t.page || t;
+              const marker = await p.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+              const url = p.url();
+
+              if (!marker && (url === 'about:blank' || url === '')) {
+                await context.closeTab(i).catch(() => { });
+                debugMsg += ` (Auto-closed blank ghost tab at index ${i})`;
+              }
+            }
+          }
 
           // Inject persistent marker that survives navigation
           if (typeof page.addInitScript === 'function') {
@@ -340,6 +413,7 @@ function createEnhancedTabsTool() {
             page: page,
             tab: tab,
             createdAt: new Date(),
+            lastActivity: new Date(),
             title: 'New Tab'
           });
 
@@ -359,7 +433,9 @@ function createEnhancedTabsTool() {
             }
           });
 
-          response.addResult(`## Tab Created\n**tabId: \`${tabId}\`**`);
+          let resultMsg = `## Tab Created\n**tabId: \`${tabId}\`**`;
+          if (debugMsg) resultMsg += `\n\n_${debugMsg}_`;
+          response.addResult(resultMsg);
           return;
         }
 
@@ -393,6 +469,7 @@ function createEnhancedTabsTool() {
             page: page,
             tab: tab,
             createdAt: new Date(),
+            lastActivity: new Date(),
             title: await page.title().catch(() => 'Reclaimed Tab')
           });
           saveRegistry();
@@ -451,8 +528,10 @@ function createEnhancedTabsTool() {
         case 'list': {
           const tabs = context.tabs();
           let output = `## Tab Report\n\n`;
-
           const rows = [];
+
+          // Part 1: Physical Tabs in THIS context
+          const identifiedPhysicalPageIds = new Set();
           for (let i = 0; i < tabs.length; i++) {
             const tab = tabs[i];
             const page = tab.page || tab;
@@ -465,6 +544,7 @@ function createEnhancedTabsTool() {
             if (managedId) {
               status = '**Managed (Active)**';
               idDisp = `\`${managedId}\``;
+              identifiedPhysicalPageIds.add(managedId);
             } else if (marker) {
               const lastActivity = marker.lastActivity || 0;
               const id = marker.id || 'unknown';
@@ -474,14 +554,34 @@ function createEnhancedTabsTool() {
                 status = '_Orphan (Zombie)_';
               }
               idDisp = `\`${id}\``;
+              identifiedPhysicalPageIds.add(id);
             }
 
             const title = tab.lastTitle?.() || await page.title().catch(() => 'Untitled');
-            rows.push(`| ${i} | ${idDisp} | ${status} | ${title} |`);
+            const url = page.url();
+            rows.push(`| ${i} | ${idDisp} | ${status} | ${title} | \`${url}\` |`);
           }
 
-          output += `| Index | Tab ID | Status | Title |\n|---|---|---|---|\n` + rows.join('\n');
-          output += `\n\n**Guidelines:**\n- **User (Secure):** Private user tabs. DO NOT TOUCH.\n- **Active (Other Model):** AI tabs in use by another session. DO NOT TOUCH.\n- **Orphan (Zombie):** Abandoned AI tabs. Clean with \`purge_zombies\`.`;
+          // Part 2: Ghost Tabs (Managed by other parallel MCP processes)
+          // We know about these from the shared registry file
+          for (const [id, entry] of tabRegistry.entries()) {
+            if (identifiedPhysicalPageIds.has(id)) continue;
+
+            const now = Date.now();
+            const lastActivity = entry.lastActivity ? new Date(entry.lastActivity).getTime() : 0;
+
+            let status = '';
+            if (now - lastActivity < HEARTBEAT_TIMEOUT) {
+              status = '**Active (Other Session)**';
+            } else {
+              status = '_Orphan (Zombie)_';
+            }
+
+            rows.push(`| - | \`${id}\` | ${status} | ${entry.title || 'Unknown'} (Remote Window) | - |`);
+          }
+
+          output += `| Index | Tab ID | Status | Title | URL |\n|---|---|---|---|---|\n` + rows.join('\n');
+          output += `\n\n**Guidelines:**\n- **User (Secure):** Private user tabs. DO NOT TOUCH.\n- **Active (Other Model/Session):** AI tabs in use by another session. DO NOT TOUCH.\n- **Orphan (Zombie):** Abandoned AI tabs. Clean with \`purge_zombies\`.`;
 
           response.addResult(output);
           return;
