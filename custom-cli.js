@@ -4,6 +4,8 @@
  */
 
 const path = require('path');
+const http = require('http');
+const { spawn } = require('child_process');
 
 // Direct paths to playwright internals
 const playwrightCorePath = path.dirname(require.resolve('playwright-core/package.json'));
@@ -18,6 +20,109 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const { CustomBrowserServerBackend } = require('./src/custom-backend');
 
 const packageJSON = require('./package.json');
+
+// Shared CDP configuration
+const CDP_PORT = 9222;
+const CDP_USER_DATA_DIR = path.join(process.env.LOCALAPPDATA || '', 'ms-playwright', 'mcp-chrome');
+
+/**
+ * Check if CDP endpoint is available
+ */
+async function isCdpAvailable() {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${CDP_PORT}/json/version`, (res) => {
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+  });
+}
+
+/**
+ * Launch Chrome with remote debugging if not already running
+ */
+async function ensureChromeWithCDP() {
+  if (await isCdpAvailable()) {
+    console.error(`[Playwright MCP] CDP already available on port ${CDP_PORT}`);
+    return `http://127.0.0.1:${CDP_PORT}`;
+  }
+
+  console.error(`[Playwright MCP] Starting Chrome with CDP on port ${CDP_PORT}...`);
+  
+  // Find Chrome / Chromium executable.
+  // Priority: user-set CHROME_PATH → system Chrome → Playwright's bundled Chromium
+  const playwrightChromiumDir = path.join(
+    process.env.LOCALAPPDATA || '',
+    'ms-playwright'
+  );
+  let playwrightChromiumExe = null;
+  try {
+    const fs = require('fs');
+    const dirs = fs.readdirSync(playwrightChromiumDir)
+      .filter(d => d.startsWith('chromium-'))
+      .sort()
+      .reverse(); // newest first
+    for (const d of dirs) {
+      const candidate = path.join(playwrightChromiumDir, d, 'chrome-win64', 'chrome.exe');
+      if (fs.existsSync(candidate)) { playwrightChromiumExe = candidate; break; }
+    }
+  } catch (_) { /* LOCALAPPDATA not accessible */ }
+
+  const chromePaths = [
+    process.env.CHROME_PATH,
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    playwrightChromiumExe, // fallback: Playwright's bundled Chromium
+  ].filter(Boolean);
+
+  let chromePath = null;
+  const fs = require('fs');
+  for (const p of chromePaths) {
+    if (fs.existsSync(p)) {
+      chromePath = p;
+      break;
+    }
+  }
+
+  if (!chromePath) {
+    console.error('[Playwright MCP] Chrome not found, falling back to userDataDir mode');
+    return null;
+  }
+
+  // Launch Chrome detached
+  const chromeProcess = spawn(chromePath, [
+    `--remote-debugging-port=${CDP_PORT}`,
+    `--user-data-dir=${CDP_USER_DATA_DIR}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-infobars',
+    '--exclude-switches=enable-automation',
+    '--disable-features=ChromeWhatsNewUI',
+    '--hide-crash-restore-bubble',
+    '--suppress-message-center-popups',
+    '--disable-client-side-phishing-detection',
+    '--no-service-autorun',
+    '--password-store=basic',
+    '--use-mock-keychain',
+  ], {
+    detached: true,
+    stdio: 'ignore'
+  });
+  chromeProcess.unref();
+
+  // Wait for CDP to be available
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 200));
+    if (await isCdpAvailable()) {
+      console.error(`[Playwright MCP] Chrome started successfully`);
+      return `http://127.0.0.1:${CDP_PORT}`;
+    }
+  }
+
+  console.error('[Playwright MCP] Failed to start Chrome with CDP, falling back to userDataDir mode');
+  return null;
+}
 
 async function createCustomConnection(userConfig = {}) {
   const config = await resolveConfig(userConfig);
@@ -62,6 +167,8 @@ program
   .option('--vision', 'Enable vision mode (screenshots instead of snapshots)')
   .option('--config <path>', 'Path to config file')
   .option('--max-snapshot-lines <lines>', 'Max lines before caching (default: 300)', '300')
+  .option('--shared-cdp', 'Use shared Chrome instance with CDP (default: true)', true)
+  .option('--no-shared-cdp', 'Disable shared CDP mode')
   .action(async (options) => {
     // Update cache config if provided
     if (options.maxSnapshotLines) {
@@ -71,17 +178,131 @@ program
 
     const config = {};
     if (options.browser) config.browser = { browserName: options.browser };
-    if (process.env.PLAYWRIGHT_MCP_USER_DATA_DIR) {
+    
+    // Priority: explicit CDP env > shared CDP mode > userDataDir env > isolated
+    if (process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT) {
+      config.browser = { ...config.browser, cdpEndpoint: process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT };
+      console.error(`[Playwright MCP] Using explicit CDP endpoint: ${process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT}`);
+    } else if (options.sharedCdp !== false && options.browser !== 'firefox' && options.browser !== 'webkit') {
+      // Try shared CDP mode - launch Chrome if needed, connect to it
+      const cdpEndpoint = await ensureChromeWithCDP();
+      if (cdpEndpoint) {
+        config.browser = { ...config.browser, cdpEndpoint };
+      } else if (process.env.PLAYWRIGHT_MCP_USER_DATA_DIR) {
+        config.browser = { ...config.browser, userDataDir: process.env.PLAYWRIGHT_MCP_USER_DATA_DIR };
+      }
+    } else if (process.env.PLAYWRIGHT_MCP_USER_DATA_DIR) {
       config.browser = { ...config.browser, userDataDir: process.env.PLAYWRIGHT_MCP_USER_DATA_DIR };
     }
+    
     if (options.headless) config.browser = { ...config.browser, headless: true };
     if (options.vision) config.vision = true;
 
-    const connection = await createCustomConnection(config);
+    if (options.port) {
+      // ── SSE / HTTP server mode ─────────────────────────────────────────────
+      // One Node.js process handles all Claude tabs.
+      // Each GET /sse creates a new MCP connection (own Context → own CDP session),
+      // but Chrome, tabRegistry, snapshotCache and recordingManager are all shared
+      // in-process, so memory stays flat regardless of how many tabs are open.
+      const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
+      const port = parseInt(options.port, 10);
+      const host = options.host || '127.0.0.1';
 
-    // Stdio transport for MCP
-    const transport = new StdioServerTransport();
-    await connection.connect(transport);
+      // sessionId → SSEServerTransport
+      const transports = new Map();
+
+      const httpServer = http.createServer(async (req, res) => {
+        try {
+          const reqUrl = new URL(req.url, 'http://localhost');
+
+          // CORS preflight
+          if (req.method === 'OPTIONS') {
+            res.writeHead(204, {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Headers': 'Content-Type',
+            });
+            res.end();
+            return;
+          }
+
+          // ── New client connects ──────────────────────────────────────────
+          if (req.method === 'GET' && reqUrl.pathname === '/sse') {
+            const transport = new SSEServerTransport('/message', res);
+            const sessionId = transport.sessionId;
+            transports.set(sessionId, transport);
+
+            transport.onclose = () => {
+              transports.delete(sessionId);
+              console.error(
+                `[Playwright MCP] Session ${sessionId.slice(0, 8)} disconnected.` +
+                ` Active: ${transports.size}`
+              );
+            };
+
+            // Each session gets its own connection + Context (tab isolation),
+            // but all connect to the already-running shared Chrome via CDP.
+            const connection = await createCustomConnection(config);
+            await connection.connect(transport);
+
+            console.error(
+              `[Playwright MCP] Session ${sessionId.slice(0, 8)} connected.` +
+              ` Active: ${transports.size}`
+            );
+
+          // ── Client sends a JSON-RPC message ─────────────────────────────
+          } else if (req.method === 'POST' && reqUrl.pathname === '/message') {
+            const sessionId = reqUrl.searchParams.get('sessionId');
+            const transport = transports.get(sessionId);
+
+            if (!transport) {
+              res.writeHead(404).end('Session not found');
+              return;
+            }
+
+            // SSEServerTransport reads the body from req itself (raw-body)
+            await transport.handlePostMessage(req, res);
+
+          // ── Health check ─────────────────────────────────────────────────
+          } else if (req.method === 'GET' && reqUrl.pathname === '/health') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              status: 'ok',
+              sessions: transports.size,
+              pid: process.pid,
+            }));
+
+          } else {
+            res.writeHead(404).end('Not found');
+          }
+        } catch (err) {
+          console.error('[Playwright MCP] Request error:', err);
+          if (!res.headersSent) res.writeHead(500).end('Internal error');
+        }
+      });
+
+      httpServer.listen(port, host, () => {
+        console.error(`[Playwright MCP] SSE server on  http://${host}:${port}/sse`);
+        console.error(`[Playwright MCP] Health check:  http://${host}:${port}/health`);
+      });
+
+      const shutdown = async (signal) => {
+        console.error(`[Playwright MCP] ${signal} — shutting down...`);
+        for (const transport of transports.values()) {
+          await transport.close().catch(() => {});
+        }
+        httpServer.close(() => process.exit(0));
+      };
+
+      process.on('SIGINT',  () => shutdown('SIGINT'));
+      process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+    } else {
+      // ── Stdio mode (original) ──────────────────────────────────────────────
+      // One process per Claude tab — kept intact as fallback.
+      const connection = await createCustomConnection(config);
+      const transport = new StdioServerTransport();
+      await connection.connect(transport);
+    }
   });
 
 program.parse(process.argv);

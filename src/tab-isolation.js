@@ -343,21 +343,22 @@ function createEnhancedTabsTool() {
 
       switch (params.action) {
         case 'new': {
-          let tabs = context.tabs();
-          let debugMsg = `Total visible tabs initially: ${tabs.length}`;
-          if (tabs.length === 0) {
-            await new Promise(r => setTimeout(r, 300));
-            tabs = context.tabs();
-            debugMsg += ` -> after wait: ${tabs.length}`;
-          }
-          let tab;
-          let isReclaimed = false;
+          try {
+            let tabs = context.tabs();
+            let debugMsg = `Total visible tabs initially: ${tabs.length}`;
+            if (tabs.length === 0) {
+              await new Promise(r => setTimeout(r, 300));
+              tabs = context.tabs();
+              debugMsg += ` -> after wait: ${tabs.length}`;
+            }
+            let tab;
+            let isReclaimed = false;
 
-          // Optimization: Search for any existing blank, unmanaged tab to reuse
-          for (const candidate of tabs) {
-            const page = candidate.page || candidate;
-            const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
-            const url = page.url();
+            // Optimization: Search for any existing blank, unmanaged tab to reuse
+            for (const candidate of tabs) {
+              const page = candidate.page || candidate;
+              const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+              const url = page.url();
 
             const isBlank = (
               url === 'about:blank' ||
@@ -378,25 +379,6 @@ function createEnhancedTabsTool() {
 
           const tabId = generateTabId();
           const page = tab.page || tab;
-
-          // Aggressive Cleanup: If we now have multiple tabs and some are still blank/unmanaged, close them
-          // to prevent that annoying "extra blank tab" from staying open.
-          const finalTabs = context.tabs();
-          if (finalTabs.length > 1) {
-            for (let i = 0; i < finalTabs.length; i++) {
-              const t = finalTabs[i];
-              if (t === tab) continue; // Keep our new tab
-
-              const p = t.page || t;
-              const marker = await p.evaluate(m => window[m], MARKER_NAME).catch(() => null);
-              const url = p.url();
-
-              if (!marker && (url === 'about:blank' || url === '')) {
-                await context.closeTab(i).catch(() => { });
-                debugMsg += ` (Auto-closed blank ghost tab at index ${i})`;
-              }
-            }
-          }
 
           // Inject persistent marker that survives navigation
           if (typeof page.addInitScript === 'function') {
@@ -433,10 +415,42 @@ function createEnhancedTabsTool() {
             }
           });
 
+          // Background Cleanup: Close blank/unmanaged tabs without blocking response
+          // Run AFTER tab is registered and marker is set to avoid race condition
+          (async () => {
+            try {
+              const finalTabs = context.tabs();
+              if (finalTabs.length > 1) {
+                // Collect indices to close first, then close in reverse order
+                const toClose = [];
+                for (let i = 0; i < finalTabs.length; i++) {
+                  const t = finalTabs[i];
+                  if (t === tab) continue;
+                  try {
+                    const p = t.page || t;
+                    const marker = await p.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+                    const url = p.url();
+                    if (!marker && (url === 'about:blank' || url === '')) {
+                      toClose.push(i);
+                    }
+                  } catch (e) { /* tab might be gone */ }
+                }
+                // Close in reverse order to preserve indices
+                for (const i of toClose.reverse()) {
+                  await context.closeTab(i).catch(() => { });
+                }
+              }
+            } catch (e) { /* ignore cleanup errors */ }
+          })();
+
           let resultMsg = `## Tab Created\n**tabId: \`${tabId}\`**`;
           if (debugMsg) resultMsg += `\n\n_${debugMsg}_`;
           response.addResult(resultMsg);
           return;
+          } catch (createError) {
+            response.addError(`Failed to create tab: ${createError.message}`);
+            return;
+          }
         }
 
         case 'reclaim': {
