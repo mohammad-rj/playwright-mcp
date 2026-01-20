@@ -19,12 +19,87 @@ const playwrightPath = path.dirname(require.resolve('playwright/package.json'));
 const mcpPath = path.join(playwrightPath, 'lib', 'mcp');
 const { filteredTools } = require(path.join(mcpPath, 'browser', 'tools'));
 
+const fs = require('fs');
+
+// Path for persistent registry
+const STORAGE_PATH = path.join(__dirname, '..', '.mcp', 'tabs.json');
+const MARKER_NAME = '__KIRO_MANAGED_TAB_ID__';
+const HEARTBEAT_TIMEOUT = 5 * 60 * 1000; // 5 minutes inactivity = zombie
+
+/**
+ * Update the heartbeat marker in the browser window
+ * @param {Page} page - Playwright page
+ * @param {string} id - Tab ID
+ */
+async function updateHeartbeat(page, id) {
+  try {
+    await page.evaluate((m, id, time) => {
+      window[m] = { id, lastActivity: time };
+    }, MARKER_NAME, id, Date.now()).catch(() => { });
+  } catch (e) { /* Ignore errors if page is closing */ }
+}
+
 /**
  * Tab registry - maps string IDs to actual tab references
  * Key: 6-char string ID
  * Value: { page: Page, createdAt: Date, title: string }
  */
-const tabRegistry = new Map();
+let tabRegistry = new Map();
+
+/**
+ * Load registry from disk and map to existing browser tabs
+ * @param {Context} context - Playwright context
+ */
+async function syncRegistryWithBrowser(context) {
+  try {
+    if (!fs.existsSync(STORAGE_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(STORAGE_PATH, 'utf8'));
+    const tabs = context.tabs();
+
+    for (const [id, info] of Object.entries(data)) {
+      // Find a tab that has this ID in its window metadata
+      for (const tab of tabs) {
+        try {
+          const page = tab.page || tab;
+          const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+          const remoteId = (typeof marker === 'object' && marker !== null) ? marker.id : marker;
+
+          if (remoteId === id) {
+            tabRegistry.set(id, {
+              page: page,
+              tab: tab,
+              createdAt: new Date(info.createdAt),
+              title: info.title
+            });
+            break;
+          }
+        } catch (e) { /* Tab might be unreachable */ }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to sync tab registry:', e);
+  }
+}
+
+/**
+ * Save active registry to disk
+ */
+function saveRegistry() {
+  try {
+    const data = {};
+    for (const [id, entry] of tabRegistry.entries()) {
+      data[id] = {
+        createdAt: entry.createdAt,
+        title: entry.title
+      };
+    }
+    const dir = path.dirname(STORAGE_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(STORAGE_PATH, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error('Failed to save tab registry:', e);
+  }
+}
 
 /**
  * Generate a random 6-character alphanumeric ID
@@ -61,16 +136,17 @@ function getTabByStringId(context, tabId) {
   if (!entry) {
     throw new Error(`Tab "${tabId}" not found. It may have been closed or never existed. Use browser_tabs(action="new") to create a new tab.`);
   }
-  
+
   // Check if page is still valid by trying to access it
   const page = entry.page;
   try {
     // Try to check if page is closed - this works for Playwright Page objects
     if (typeof page.isClosed === 'function' && page.isClosed()) {
       tabRegistry.delete(tabId);
+      saveRegistry();
       throw new Error(`Tab "${tabId}" was closed. Use browser_tabs(action="new") to create a new tab.`);
     }
-    
+
     // Try to access URL as another validity check
     page.url();
   } catch (e) {
@@ -79,9 +155,10 @@ function getTabByStringId(context, tabId) {
     }
     // Page object is invalid (browser closed or page destroyed)
     tabRegistry.delete(tabId);
+    saveRegistry();
     throw new Error(`Tab "${tabId}" is no longer valid (browser may have been closed). Use browser_tabs(action="new") to create a new tab.`);
   }
-  
+
   // Return the tab object for Playwright MCP compatibility
   return entry.tab || entry.page;
 }
@@ -96,21 +173,29 @@ function createTabProxyContext(context, tabId) {
   if (!tabId || typeof tabId !== 'string') {
     throw new Error('tabId is required. First call browser_tabs(action="new") to get your tab ID.');
   }
-  
+
   return new Proxy(context, {
     get(target, prop) {
       if (prop === 'currentTab') {
-        return () => getTabByStringId(target, tabId);
+        const tab = getTabByStringId(target, tabId);
+        if (tab && tab.page) updateHeartbeat(tab.page, tabId);
+        return () => tab;
       }
-      
+
       if (prop === 'currentTabOrDie') {
-        return () => getTabByStringId(target, tabId);
+        const tab = getTabByStringId(target, tabId);
+        if (tab && tab.page) updateHeartbeat(tab.page, tabId);
+        return () => tab;
       }
-      
+
       if (prop === 'ensureTab') {
-        return async () => getTabByStringId(target, tabId);
+        return async () => {
+          const tab = getTabByStringId(target, tabId);
+          if (tab && tab.page) await updateHeartbeat(tab.page, tabId);
+          return tab;
+        };
       }
-      
+
       const value = target[prop];
       if (typeof value === 'function') {
         return value.bind(target);
@@ -128,11 +213,11 @@ function createTabProxyContext(context, tabId) {
 function wrapToolWithTabId(tool) {
   const originalSchema = tool.schema;
   const originalHandle = tool.handle;
-  
+
   const newInputSchema = originalSchema.inputSchema.extend({
     tabId: tabIdSchema
   });
-  
+
   return {
     ...tool,
     schema: {
@@ -141,16 +226,20 @@ function wrapToolWithTabId(tool) {
     },
     handle: async (context, params, response) => {
       const { tabId, ...restParams } = params;
-      
+
       if (!tabId || typeof tabId !== 'string' || tabId.length !== 6) {
         throw new Error(
           'tabId (6-char string) is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.'
         );
       }
-      
+
       const proxyContext = createTabProxyContext(context, tabId);
       response._context = proxyContext;
-      
+
+      // Update heartbeat before execution
+      const entry = tabRegistry.get(tabId);
+      if (entry && entry.page) await updateHeartbeat(entry.page, tabId);
+
       return await originalHandle(proxyContext, restParams, response);
     }
   };
@@ -162,7 +251,7 @@ function wrapToolWithTabId(tool) {
 const TAB_AWARE_TOOLS = new Set([
   'browser_snapshot',
   'browser_click',
-  'browser_drag', 
+  'browser_drag',
   'browser_hover',
   'browser_select_option',
   'browser_generate_locator',
@@ -192,13 +281,13 @@ const TAB_AWARE_TOOLS = new Set([
  */
 function createTabAwareTools(config) {
   const originalTools = filteredTools(config);
-  
+
   return originalTools.map(tool => {
     // Skip browser_tabs - we replace it with enhanced version
     if (tool.schema.name === 'browser_tabs') {
       return null;
     }
-    
+
     if (TAB_AWARE_TOOLS.has(tool.schema.name)) {
       return wrapToolWithTabId(tool);
     }
@@ -208,9 +297,6 @@ function createTabAwareTools(config) {
 
 /**
  * Enhanced browser_tabs tool
- * - 'new': Creates tab and returns 6-char string tabId
- * - 'close': Requires tabId to close
- * - 'list': Returns all tabs with their IDs and titles
  * @returns {Object} Enhanced tabs tool
  */
 function createEnhancedTabsTool() {
@@ -218,163 +304,191 @@ function createEnhancedTabsTool() {
     schema: {
       name: 'browser_tabs',
       title: 'Manage tabs',
-      description: 'Create, close, or list browser tabs. Use action="new" to create a tab and get your tabId (6-char string). Use action="close" with your tabId to close it. Use action="list" to see all tabs with their IDs and titles.',
+      description: 'Tab management. Use "new" to create, "list" to see status, "close" to terminate, "reclaim" to take over an orphan AI tab, or "purge_zombies" to close all abandoned AI tabs.',
       inputSchema: z.object({
-        action: z.enum(['new', 'close', 'list']).describe('Operation: "new" to create tab, "close" to close tab, "list" to see all tabs'),
-        tabId: z.string().length(6).optional().describe('Tab ID (6-char string) to close (required for close action)')
+        action: z.enum(['new', 'close', 'list', 'reclaim', 'purge_zombies']).describe('Operation: "new", "close", "list", "reclaim", or "purge_zombies"'),
+        tabId: z.string().length(6).optional().describe('Tab ID (6-char string) to close/reclaim'),
+        tabIndex: z.number().optional().describe('Tab index for reclaim action')
       }),
       type: 'action'
     },
     capability: 'core-tabs',
     handle: async (context, params, response) => {
+      // Ensure current process state matches browser state
+      if (tabRegistry.size === 0) {
+        await syncRegistryWithBrowser(context);
+      }
+
       switch (params.action) {
         case 'new': {
           const tab = await context.newTab();
           const tabId = generateTabId();
-          
-          // Get the actual Playwright Page from the Tab object
           const page = tab.page || tab;
-          
-          // Register the tab
+
+          // Inject persistent marker that survives navigation
+          if (typeof page.addInitScript === 'function') {
+            await page.addInitScript((m, id, time) => {
+              window[m] = { id, lastActivity: time };
+            }, MARKER_NAME, tabId, Date.now());
+            // Also set it immediately for current page
+            await page.evaluate((m, id, time) => {
+              window[m] = { id, lastActivity: time };
+            }, MARKER_NAME, tabId, Date.now()).catch(() => { });
+          }
+
           tabRegistry.set(tabId, {
             page: page,
             tab: tab,
             createdAt: new Date(),
             title: 'New Tab'
           });
-          
-          // Auto-cleanup when THIS specific page is closed
-          const pageRef = page; // Capture reference
-          const thisTabId = tabId; // Capture tabId
-          if (typeof page.on === 'function') {
-            page.on('close', () => {
-              // Only delete if this is still the same page in registry
-              const currentEntry = tabRegistry.get(thisTabId);
-              if (currentEntry && currentEntry.page === pageRef) {
-                tabRegistry.delete(thisTabId);
-              }
-            });
-          }
-          
-          // Update title when page loads
+
+          saveRegistry();
+
+          page.on('close', () => {
+            tabRegistry.delete(tabId);
+            saveRegistry();
+          });
+
           page.on('load', async () => {
             const entry = tabRegistry.get(tabId);
             if (entry) {
-              try {
-                entry.title = await page.title() || 'Untitled';
-              } catch (e) {
-                // Page might be closed
-              }
+              entry.title = await page.title().catch(() => 'Untitled');
+              saveRegistry();
+              await updateHeartbeat(page, tabId);
             }
           });
-          
-          response.addResult(
-            `## Tab Created\n\n` +
-            `**Your tabId: \`${tabId}\`**\n\n` +
-            `Use this tabId with ALL browser tools:\n` +
-            `- \`browser_navigate(tabId="${tabId}", url="...")\`\n` +
-            `- \`browser_snapshot(tabId="${tabId}")\`\n` +
-            `- \`browser_click(tabId="${tabId}", ref="...", element="...")\`\n` +
-            `- \`browser_tabs(action="close", tabId="${tabId}")\` when done\n\n` +
-            `⚠️ tabId is REQUIRED for all browser operations.`
-          );
+
+          response.addResult(`## Tab Created\n**tabId: \`${tabId}\`**`);
           return;
         }
-        
-        case 'close': {
-          if (!params.tabId || params.tabId.length !== 6) {
-            throw new Error('tabId (6-char string) is required for close action.');
-          }
-          
-          const entry = tabRegistry.get(params.tabId);
-          if (!entry) {
-            throw new Error(`Tab "${params.tabId}" not found. It may have already been closed.`);
-          }
-          
-          // Find the tab index - compare with tab object OR page
+
+        case 'reclaim': {
           const tabs = context.tabs();
-          const tabIndex = tabs.findIndex(t => t === entry.tab || t === entry.page || t.page === entry.page);
-          
-          if (tabIndex === -1) {
-            tabRegistry.delete(params.tabId);
-            throw new Error(`Tab "${params.tabId}" was already closed.`);
+          const index = params.tabIndex;
+          if (index === undefined) throw new Error('tabIndex is required for reclaim.');
+          const tab = tabs[index];
+          if (!tab) throw new Error(`Tab index ${index} not found.`);
+
+          const page = tab.page || tab;
+          const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+          const orphanId = (typeof marker === 'object' && marker !== null) ? marker.id : marker;
+
+          if (!orphanId) {
+            throw new Error('This is a USER PRIVILEGED tab and cannot be reclaimed. Hands off.');
           }
-          
-          await context.closeTab(tabIndex);
-          tabRegistry.delete(params.tabId);
-          
-          response.addResult(`Tab \`${params.tabId}\` closed.`);
+
+          const lastActivity = (marker && marker.lastActivity) || 0;
+          if (Date.now() - lastActivity < HEARTBEAT_TIMEOUT) {
+            throw new Error('This tab is currently ACTIVE (Managed by another model). Cannot reclaim.');
+          }
+
+          // Generate new ID or keep old one
+          const newId = generateTabId();
+          await page.evaluate((m, id, time) => {
+            window[m] = { id, lastActivity: time };
+          }, MARKER_NAME, newId, Date.now());
+
+          tabRegistry.set(newId, {
+            page: page,
+            tab: tab,
+            createdAt: new Date(),
+            title: await page.title().catch(() => 'Reclaimed Tab')
+          });
+          saveRegistry();
+
+          response.addResult(`## Tab Reclaimed\nNew ID: \`${newId}\``);
           return;
         }
-        
+
+        case 'purge_zombies': {
+          const tabs = context.tabs();
+          let count = 0;
+          const toClose = [];
+          const now = Date.now();
+
+          for (let i = 0; i < tabs.length; i++) {
+            const tab = tabs[i];
+            const page = tab.page || tab;
+            const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+
+            if (!marker) continue;
+
+            const lastActivity = (marker && marker.lastActivity) || 0;
+            const isManagedLocally = [...tabRegistry.values()].some(e => e.page === page);
+
+            // Zombie: Has marker, Not managed locally, AND last activity > 5 mins ago
+            if (!isManagedLocally && (now - lastActivity > HEARTBEAT_TIMEOUT)) {
+              toClose.push(i);
+            }
+          }
+
+          // Close from highest index down to avoid index shifts
+          for (const idx of toClose.sort((a, b) => b - a)) {
+            await context.closeTab(idx);
+            count++;
+          }
+
+          response.addResult(`Purged ${count} abandoned AI tabs. Active AI tabs and User tabs were protected.`);
+          return;
+        }
+
+        case 'close': {
+          if (!params.tabId) throw new Error('tabId required.');
+          const entry = tabRegistry.get(params.tabId);
+          if (!entry) throw new Error('Tab not found.');
+
+          const tabs = context.tabs();
+          const idx = tabs.findIndex(t => t === entry.tab || t === entry.page || t.page === entry.page);
+          if (idx !== -1) await context.closeTab(idx);
+
+          tabRegistry.delete(params.tabId);
+          saveRegistry();
+          response.addResult(`Closed \`${params.tabId}\`.`);
+          return;
+        }
+
         case 'list': {
           const tabs = context.tabs();
-          const tabList = [];
-          
-          // Clean up registry and build list
-          for (const [id, entry] of tabRegistry.entries()) {
-            // Find by comparing tab object OR page object
-            const tabIndex = tabs.findIndex(t => t === entry.tab || t === entry.page || t.page === entry.page);
-            
-            if (tabIndex === -1) {
-              // Tab was closed externally
-              tabRegistry.delete(id);
-              continue;
-            }
-            
-            // Get the Tab object from context.tabs()
-            const tab = tabs[tabIndex];
-            
-            // Get current title and URL
-            // Tab has .page (Playwright Page) and .lastTitle() method
-            let title = 'Untitled';
-            let url = 'about:blank';
-            
-            try {
-              // Use Tab's page property to get URL and title
-              if (tab.page) {
-                url = tab.page.url() || 'about:blank';
-                title = await tab.page.title() || tab.lastTitle?.() || 'Untitled';
-              } else if (typeof tab.lastTitle === 'function') {
-                title = tab.lastTitle();
+          let output = `## Tab Report\n\n`;
+
+          const rows = [];
+          for (let i = 0; i < tabs.length; i++) {
+            const tab = tabs[i];
+            const page = tab.page || tab;
+            const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+            const managedId = [...tabRegistry.entries()].find(([_, e]) => e.page === page)?.[0];
+
+            let status = 'User (Secure)';
+            let idDisp = '-';
+
+            if (managedId) {
+              status = '**Managed (Active)**';
+              idDisp = `\`${managedId}\``;
+            } else if (marker) {
+              const lastActivity = marker.lastActivity || 0;
+              const id = marker.id || 'unknown';
+              if (Date.now() - lastActivity < HEARTBEAT_TIMEOUT) {
+                status = '**Active (Other Model)**';
+              } else {
+                status = '_Orphan (Zombie)_';
               }
-            } catch (e) {
-              // Keep defaults
+              idDisp = `\`${id}\``;
             }
-            
-            tabList.push({
-              id,
-              title,
-              url,
-              createdAt: entry.createdAt.toISOString()
-            });
+
+            const title = tab.lastTitle?.() || await page.title().catch(() => 'Untitled');
+            rows.push(`| ${i} | ${idDisp} | ${status} | ${title} |`);
           }
-          
-          if (tabList.length === 0) {
-            response.addResult(
-              `## No Tabs\n\n` +
-              `No tabs are currently open.\n` +
-              `Use \`browser_tabs(action="new")\` to create one.`
-            );
-            return;
-          }
-          
-          let result = `## Open Tabs (${tabList.length})\n\n`;
-          result += `| ID | Title | URL |\n`;
-          result += `|----|-------|-----|\n`;
-          
-          for (const tab of tabList) {
-            const shortUrl = tab.url.length > 50 ? tab.url.substring(0, 47) + '...' : tab.url;
-            const shortTitle = tab.title.length > 30 ? tab.title.substring(0, 27) + '...' : tab.title;
-            result += `| \`${tab.id}\` | ${shortTitle} | ${shortUrl} |\n`;
-          }
-          
-          response.addResult(result);
+
+          output += `| Index | Tab ID | Status | Title |\n|---|---|---|---|\n` + rows.join('\n');
+          output += `\n\n**Guidelines:**\n- **User (Secure):** Private user tabs. DO NOT TOUCH.\n- **Active (Other Model):** AI tabs in use by another session. DO NOT TOUCH.\n- **Orphan (Zombie):** Abandoned AI tabs. Clean with \`purge_zombies\`.`;
+
+          response.addResult(output);
           return;
         }
-        
+
         default:
-          throw new Error(`Unknown action: ${params.action}. Use "new", "close", or "list".`);
+          throw new Error('Invalid action.');
       }
     }
   };
