@@ -124,15 +124,25 @@ async function ensureChromeWithCDP() {
   return null;
 }
 
-async function createCustomConnection(userConfig = {}) {
+async function createCustomConnection(userConfig = {}, sharedCdpMode = false) {
   const config = await resolveConfig(userConfig);
-  const originalFactory = contextFactory(config);
 
-  // Robust factory object that falls back to isolated mode if userDataDir is locked
+  // Robust factory object — lazy Chrome start + isolated fallback if userDataDir is locked
   const factory = {
     createContext: async (options) => {
+      // Lazy Chrome start: only when a browser context is actually needed
+      if (sharedCdpMode && !(await isCdpAvailable())) {
+        console.error('[Playwright MCP] Chrome not running — starting...');
+        const newEndpoint = await ensureChromeWithCDP();
+        if (newEndpoint) {
+          config.browser = { ...config.browser, cdpEndpoint: newEndpoint };
+        } else if (config.browser) {
+          delete config.browser.cdpEndpoint;
+        }
+      }
+
       try {
-        return await originalFactory.createContext(options);
+        return await contextFactory(config).createContext(options);
       } catch (e) {
         if (e.message.includes('already in use') && config.browser?.userDataDir) {
           console.error(`\n[WARNING] User Data Directory is locked by another session: ${config.browser.userDataDir}`);
@@ -178,19 +188,23 @@ program
 
     const config = {};
     if (options.browser) config.browser = { browserName: options.browser };
-    
-    // Priority: explicit CDP env > shared CDP mode > userDataDir env > isolated
+
+    // Determine if we're in shared CDP mode (Chrome will be started lazily on first use)
+    const sharedCdpMode = options.sharedCdp !== false
+      && options.browser !== 'firefox'
+      && options.browser !== 'webkit'
+      && !process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT;
+
+    // Priority: explicit CDP env > shared CDP mode (lazy) > userDataDir env > isolated
     if (process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT) {
       config.browser = { ...config.browser, cdpEndpoint: process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT };
       console.error(`[Playwright MCP] Using explicit CDP endpoint: ${process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT}`);
-    } else if (options.sharedCdp !== false && options.browser !== 'firefox' && options.browser !== 'webkit') {
-      // Try shared CDP mode - launch Chrome if needed, connect to it
-      const cdpEndpoint = await ensureChromeWithCDP();
-      if (cdpEndpoint) {
-        config.browser = { ...config.browser, cdpEndpoint };
-      } else if (process.env.PLAYWRIGHT_MCP_USER_DATA_DIR) {
+    } else if (sharedCdpMode) {
+      // CDP mode: Chrome starts lazily when first browser context is created
+      if (process.env.PLAYWRIGHT_MCP_USER_DATA_DIR) {
         config.browser = { ...config.browser, userDataDir: process.env.PLAYWRIGHT_MCP_USER_DATA_DIR };
       }
+      console.error('[Playwright MCP] Shared CDP mode — Chrome will start on first browser use');
     } else if (process.env.PLAYWRIGHT_MCP_USER_DATA_DIR) {
       config.browser = { ...config.browser, userDataDir: process.env.PLAYWRIGHT_MCP_USER_DATA_DIR };
     }
@@ -241,7 +255,7 @@ program
 
             // Each session gets its own connection + Context (tab isolation),
             // but all connect to the already-running shared Chrome via CDP.
-            const connection = await createCustomConnection(config);
+            const connection = await createCustomConnection(config, sharedCdpMode);
             await connection.connect(transport);
 
             console.error(
@@ -299,7 +313,7 @@ program
     } else {
       // ── Stdio mode (original) ──────────────────────────────────────────────
       // One process per Claude tab — kept intact as fallback.
-      const connection = await createCustomConnection(config);
+      const connection = await createCustomConnection(config, sharedCdpMode);
       const transport = new StdioServerTransport();
       await connection.connect(transport);
     }
