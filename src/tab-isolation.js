@@ -391,29 +391,34 @@ function createEnhancedTabsTool() {
             }, MARKER_NAME, tabId, Date.now()).catch(() => { });
           }
 
-          tabRegistry.set(tabId, {
-            page: page,
-            tab: tab,
-            createdAt: new Date(),
-            lastActivity: new Date(),
-            title: 'New Tab'
-          });
-
-          saveRegistry();
-
-          page.on('close', () => {
+          // Store named listener references so we can remove them later (prevents accumulation)
+          const closeListener = () => {
             tabRegistry.delete(tabId);
             saveRegistry();
-          });
-
-          page.on('load', async () => {
+          };
+          const loadListener = async () => {
             const entry = tabRegistry.get(tabId);
             if (entry) {
               entry.title = await page.title().catch(() => 'Untitled');
               saveRegistry();
               await updateHeartbeat(page, tabId);
             }
+          };
+
+          tabRegistry.set(tabId, {
+            page: page,
+            tab: tab,
+            createdAt: new Date(),
+            lastActivity: new Date(),
+            title: 'New Tab',
+            ownerSessionId: response._sessionId || null,
+            _listeners: { close: closeListener, load: loadListener }
           });
+
+          saveRegistry();
+
+          page.on('close', closeListener);
+          page.on('load', loadListener);
 
           // Background Cleanup: Close blank/unmanaged tabs without blocking response
           // Run AFTER tab is registered and marker is set to avoid race condition
@@ -529,6 +534,18 @@ function createEnhancedTabsTool() {
           const entry = tabRegistry.get(params.tabId);
           if (!entry) throw new Error('Tab not found.');
 
+          // Only the owning session can close a tab
+          if (entry.ownerSessionId && response._sessionId && entry.ownerSessionId !== response._sessionId) {
+            throw new Error(`Tab "${params.tabId}" belongs to another session. Cannot close.`);
+          }
+
+          // Remove event listeners before closing
+          if (entry.page && entry._listeners) {
+            entry.page.off('close', entry._listeners.close);
+            entry.page.off('load', entry._listeners.load);
+          }
+
+
           const tabs = context.tabs();
           const idx = tabs.findIndex(t => t === entry.tab || t === entry.page || t.page === entry.page);
           if (idx !== -1) await context.closeTab(idx);
@@ -616,6 +633,28 @@ function getTabRegistry() {
   return tabRegistry;
 }
 
+/**
+ * Clean up all tabs owned by a session (called on session disconnect).
+ * Removes event listeners and tabRegistry entries. Pages stay open in Chrome.
+ * @param {string} sessionId
+ */
+function cleanupBySession(sessionId) {
+  if (!sessionId) return;
+  let cleaned = 0;
+  for (const [tabId, entry] of tabRegistry.entries()) {
+    if (entry.ownerSessionId === sessionId) {
+      if (entry.page && entry._listeners) {
+        try { entry.page.off('close', entry._listeners.close); } catch (_) {}
+        try { entry.page.off('load', entry._listeners.load); } catch (_) {}
+      }
+      tabRegistry.delete(tabId);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) saveRegistry();
+  return cleaned;
+}
+
 module.exports = {
   tabIdSchema,
   generateTabId,
@@ -625,5 +664,6 @@ module.exports = {
   createTabAwareTools,
   createEnhancedTabsTool,
   getTabRegistry,
+  cleanupBySession,
   TAB_AWARE_TOOLS
 };

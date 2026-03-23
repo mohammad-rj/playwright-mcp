@@ -124,7 +124,86 @@ async function ensureChromeWithCDP() {
   return null;
 }
 
-async function createCustomConnection(userConfig = {}, sharedCdpMode = false) {
+/**
+ * Create a shared browser factory — the underlying browser context is created
+ * once and reused by all SSE sessions. This ensures all agents share the same
+ * Chrome window (and therefore the same login state / cookies).
+ *
+ * @param {object} rawConfig  - Raw user config (browser options, etc.)
+ * @param {boolean} sharedCdpMode
+ * @returns {{ createContext: Function }}
+ */
+function createSharedFactory(rawConfig, sharedCdpMode) {
+  // Promise singleton — one context for all sessions, created lazily on first use.
+  let _contextPromise = null;
+
+  return {
+    createContext: async (clientInfo) => {
+      if (_contextPromise) return _contextPromise;
+
+      const attempt = (async () => {
+        const config = await resolveConfig(rawConfig);
+
+        // Ensure Chrome is running, get cdpEndpoint
+        let cdpEndpoint = config.browser?.cdpEndpoint;
+
+        if (!cdpEndpoint && sharedCdpMode) {
+          if (!(await isCdpAvailable())) {
+            console.error('[Playwright MCP] Chrome not running — starting...');
+            const ep = await ensureChromeWithCDP();
+            if (ep) cdpEndpoint = ep;
+          } else {
+            cdpEndpoint = `http://127.0.0.1:${CDP_PORT}`;
+          }
+        }
+
+        if (cdpEndpoint) {
+          try {
+            const { chromium } = require('playwright');
+            const browser = await chromium.connectOverCDP(cdpEndpoint);
+
+            // Retry: Chrome may take a moment to expose the default context
+            let browserContext;
+            for (let i = 0; i < 15; i++) {
+              const ctxs = browser.contexts();
+              if (ctxs.length > 0) { browserContext = ctxs[0]; break; }
+              await new Promise(r => setTimeout(r, 200));
+            }
+
+            if (browserContext) {
+              console.error('[Playwright MCP] Attached to Chrome default context — no new window will open.');
+              return { browserContext, close: async () => {} };
+            }
+            console.error('[Playwright MCP] contexts() empty after retries — falling back.');
+          } catch (e) {
+            console.error('[Playwright MCP] CDP attach failed:', e.message, '— falling back.');
+          }
+        }
+
+        // Fallback: contextFactory (may open a new window, but at least it works)
+        if (cdpEndpoint) config.browser = { ...config.browser, cdpEndpoint };
+        try {
+          return await contextFactory(config).createContext(clientInfo);
+        } catch (e) {
+          if (e.message.includes('already in use') && config.browser?.userDataDir) {
+            const isolated = { ...config, browser: { ...config.browser } };
+            delete isolated.browser.userDataDir;
+            return await contextFactory(isolated).createContext(clientInfo);
+          }
+          throw e;
+        }
+      })();
+
+      // Reset on failure so the next call retries (prevents permanently broken state)
+      _contextPromise = attempt;
+      attempt.catch(() => { _contextPromise = null; });
+
+      return _contextPromise;
+    }
+  };
+}
+
+async function createCustomConnection(userConfig = {}, sharedCdpMode = false, sessionId = null, prebuiltFactory = null) {
   const config = await resolveConfig(userConfig);
 
   // Robust factory object — lazy Chrome start + isolated fallback if userDataDir is locked
@@ -247,9 +326,15 @@ program
 
             transport.onclose = () => {
               transports.delete(sessionId);
+              // Free all resources owned by this session
+              const { cleanupBySession } = require('./src/tab-isolation');
+              const recordingManager = require('./src/recording-manager');
+              recordingManager.cleanupBySession(sessionId);
+              const cleaned = cleanupBySession(sessionId);
               console.error(
-                `[Playwright MCP] Session ${sessionId.slice(0, 8)} disconnected.` +
-                ` Active: ${transports.size}`
+                `[Playwright MCP] Session ${sessionId.slice(0, 8)} disconnected` +
+                (cleaned ? ` (freed ${cleaned} tab(s))` : '') +
+                `. Active: ${transports.size}`
               );
             };
 

@@ -176,20 +176,20 @@ function extractRefs(lines) {
  * @param {Object} actionParams - Action parameters
  * @returns {string} Recording ID
  */
-function createRecording(actionType, actionParams) {
+function createRecording(actionType, actionParams, sessionId = null) {
   ensureDir(CONFIG.recordingsDir);
-  
-  // LRU eviction
+
+  // LRU eviction — evict least-recently-started (FIFO is fine here, recordings are sequential)
   if (recordings.size >= CONFIG.maxRecordings) {
     const oldestId = recordings.keys().next().value;
     deleteRecording(oldestId);
   }
-  
+
   const id = generateId();
   const dir = path.join(CONFIG.recordingsDir, id);
   ensureDir(dir);
   ensureDir(path.join(dir, 'snapshots'));
-  
+
   /** @type {Recording} */
   const recording = {
     id,
@@ -203,12 +203,13 @@ function createRecording(actionType, actionParams) {
     significantEvents: [],
     dir,
     isRecording: true,
-    lastChangeAt: Date.now()
+    lastChangeAt: Date.now(),
+    sessionId  // track which session owns this recording
   };
-  
+
   recordings.set(id, recording);
   saveMetadata(recording);
-  
+
   return id;
 }
 
@@ -498,13 +499,33 @@ function deleteRecording(recordingId) {
 }
 
 /**
- * Cleanup all recordings
+ * Stop all active recordings owned by a session and delete their files.
+ * Called on session disconnect to prevent abandoned recording loops.
+ * @param {string} sessionId
+ */
+function cleanupBySession(sessionId) {
+  if (!sessionId) return;
+  for (const [id, rec] of recordings.entries()) {
+    if (rec.sessionId === sessionId) {
+      if (rec.isRecording) stopRecording(id, 'session_disconnected');
+      deleteRecording(id);
+    }
+  }
+}
+
+/**
+ * Cleanup all recordings (called on process exit).
  */
 function cleanupAll() {
-  for (const id of recordings.keys()) {
+  for (const id of [...recordings.keys()]) {
     deleteRecording(id);
   }
 }
+
+// Cleanup on process exit so temp files don't accumulate across restarts
+process.on('exit', cleanupAll);
+process.on('SIGINT', () => { cleanupAll(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupAll(); process.exit(0); });
 
 module.exports = {
   CONFIG,
@@ -519,5 +540,6 @@ module.exports = {
   getRecordingInfo,
   listRecordings,
   deleteRecording,
+  cleanupBySession,
   cleanupAll
 };

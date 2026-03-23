@@ -1,92 +1,99 @@
 /**
  * Universal Output Cache
- * 
+ *
  * Caches any large text output and provides pagination/search.
  * Used by PatchedResponse to handle all large outputs.
- * 
+ *
  * @module output-cache
  */
 
 const crypto = require('crypto');
 
-// Configuration
 const CONFIG = {
-  maxLines: 100,           // Max lines before caching
+  maxLines: 100,
   maxCacheSize: 30,
-  cacheExpiry: 30 * 60000, // 30 minutes
+  cacheExpiry: 30 * 60000, // 30 minutes (sliding window)
   defaultPageSize: 50
 };
 
-/** @type {Map<string, {content: string, lines: string[], totalLines: number, createdAt: number, toolName: string}>} */
+/** @type {Map<string, {lines: string[], totalLines: number, createdAt: number, lastAccessedAt: number, toolName: string}>} */
 const cache = new Map();
 
-/**
- * Generate cache ID
- */
 function generateId() {
   return 'out_' + crypto.randomBytes(4).toString('hex');
 }
 
-/**
- * Check if output needs caching
- * @param {string} text
- * @returns {boolean}
- */
 function needsCaching(text) {
   if (!text) return false;
-  const lineCount = text.split('\n').length;
-  return lineCount > CONFIG.maxLines;
+  return text.split('\n').length > CONFIG.maxLines;
 }
 
 /**
- * Cache large output
- * @param {string} content
- * @param {string} toolName
- * @returns {{cacheId: string, totalLines: number, preview: string}}
+ * True LRU eviction — removes the least-recently-accessed entry.
+ */
+function _evictLRU() {
+  let oldestKey = null;
+  let oldestAccess = Infinity;
+  for (const [key, entry] of cache) {
+    if (entry.lastAccessedAt < oldestAccess) {
+      oldestAccess = entry.lastAccessedAt;
+      oldestKey = key;
+    }
+  }
+  if (oldestKey) cache.delete(oldestKey);
+}
+
+/**
+ * Sliding-window TTL: only delete if not accessed recently.
+ */
+function _scheduleExpiry(cacheId) {
+  setTimeout(() => {
+    const entry = cache.get(cacheId);
+    if (!entry) return;
+    if (Date.now() - entry.lastAccessedAt >= CONFIG.cacheExpiry) {
+      cache.delete(cacheId);
+    } else {
+      _scheduleExpiry(cacheId);
+    }
+  }, CONFIG.cacheExpiry);
+}
+
+/**
+ * Cache large output.
+ * Stores lines[] only — content string is never duplicated.
  */
 function cacheOutput(content, toolName) {
-  // LRU eviction
-  if (cache.size >= CONFIG.maxCacheSize) {
-    const oldestId = cache.keys().next().value;
-    cache.delete(oldestId);
-  }
-  
+  if (cache.size >= CONFIG.maxCacheSize) _evictLRU();
+
   const cacheId = generateId();
-  const lines = content.split('\n');
+  const lines = content.split('\n'); // only lines stored, no duplicate content string
   const totalLines = lines.length;
-  
-  // Create preview (first 20 lines)
   const preview = lines.slice(0, 20).join('\n');
-  
+  const now = Date.now();
+
   cache.set(cacheId, {
-    content,
     lines,
     totalLines,
-    createdAt: Date.now(),
+    createdAt: now,
+    lastAccessedAt: now,
     toolName
   });
-  
-  // Set expiry
-  setTimeout(() => cache.delete(cacheId), CONFIG.cacheExpiry);
-  
+
+  _scheduleExpiry(cacheId);
+
   return { cacheId, totalLines, preview };
 }
 
-/**
- * Get paginated content
- * @param {string} cacheId
- * @param {number} startLine
- * @param {number|null} endLine
- */
 function getPaginatedContent(cacheId, startLine = 1, endLine = null) {
   const cached = cache.get(cacheId);
-  if (!cached) {
-    return { error: `Cache ID '${cacheId}' not found or expired` };
-  }
-  
+  if (!cached) return { error: `Cache ID '${cacheId}' not found or expired` };
+
+  cached.lastAccessedAt = Date.now();
   const start = Math.max(1, startLine) - 1;
-  const end = endLine ? Math.min(endLine, cached.totalLines) : Math.min(start + CONFIG.defaultPageSize, cached.totalLines);
-  
+  const end = endLine
+    ? Math.min(endLine, cached.totalLines)
+    : Math.min(start + CONFIG.defaultPageSize, cached.totalLines);
+
   return {
     content: cached.lines.slice(start, end).join('\n'),
     startLine: start + 1,
@@ -97,21 +104,14 @@ function getPaginatedContent(cacheId, startLine = 1, endLine = null) {
   };
 }
 
-/**
- * Search in cached output
- * @param {string} cacheId
- * @param {string} query
- * @param {number} maxResults
- */
 function searchInCache(cacheId, query, maxResults = 20) {
   const cached = cache.get(cacheId);
-  if (!cached) {
-    return { error: `Cache ID '${cacheId}' not found or expired` };
-  }
-  
+  if (!cached) return { error: `Cache ID '${cacheId}' not found or expired` };
+
+  cached.lastAccessedAt = Date.now();
   const results = [];
   const queryLower = query.toLowerCase();
-  
+
   for (let i = 0; i < cached.lines.length && results.length < maxResults; i++) {
     if (cached.lines[i].toLowerCase().includes(queryLower)) {
       results.push({
@@ -120,17 +120,14 @@ function searchInCache(cacheId, query, maxResults = 20) {
       });
     }
   }
-  
+
   return { query, totalMatches: results.length, results };
 }
 
-/**
- * Format cache message for response
- * @param {string} cacheId
- * @param {number} totalLines
- * @param {string} toolName
- * @param {string} preview
- */
+function clearAll() {
+  cache.clear();
+}
+
 function formatCacheMessage(cacheId, totalLines, toolName, preview) {
   let msg = `## Output Too Large - Cached\n\n`;
   msg += `**Tool:** ${toolName}\n`;
@@ -141,7 +138,6 @@ function formatCacheMessage(cacheId, totalLines, toolName, preview) {
   msg += `### Commands\n`;
   msg += `- **Get lines:** \`get_cached_output\` cacheId="${cacheId}" startLine=1 endLine=50\n`;
   msg += `- **Search:** \`search_cached_output\` cacheId="${cacheId}" query="..."\n`;
-  
   return msg;
 }
 
@@ -151,5 +147,6 @@ module.exports = {
   cacheOutput,
   getPaginatedContent,
   searchInCache,
-  formatCacheMessage
+  formatCacheMessage,
+  clearAll
 };
