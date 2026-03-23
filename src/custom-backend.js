@@ -224,7 +224,26 @@ class CustomBrowserServerBackend {
     // Use tab-aware tools instead of original filteredTools
     const tabAwareTools = createTabAwareTools(config);
     const enhancedTabsTool = createEnhancedTabsTool();
-    
+
+    // Override browser_take_screenshot: abort fonts before capture so the tool
+    // never hangs waiting for woff/woff2 files that Chrome treats as downloads.
+    const screenshotTool = tabAwareTools.find(t => t.schema.name === 'browser_take_screenshot');
+    if (screenshotTool) {
+      const _origScreenshot = screenshotTool.handle;
+      screenshotTool.handle = async (context, params, response) => {
+        const { getTabRegistry } = require('./tab-isolation');
+        const entry = getTabRegistry().get(params.tabId);
+        const page = entry?.page;
+        const FONT_GLOB = '**/*.{woff,woff2,ttf,otf,eot}';
+        if (page) await page.route(FONT_GLOB, r => r.abort()).catch(() => {});
+        try {
+          return await _origScreenshot(context, params, response);
+        } finally {
+          if (page) await page.unroute(FONT_GLOB).catch(() => {});
+        }
+      };
+    }
+
     this._tools = [
       ...tabAwareTools,
       enhancedTabsTool,
