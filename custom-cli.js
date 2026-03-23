@@ -206,8 +206,9 @@ function createSharedFactory(rawConfig, sharedCdpMode) {
 async function createCustomConnection(userConfig = {}, sharedCdpMode = false, sessionId = null, prebuiltFactory = null) {
   const config = await resolveConfig(userConfig);
 
-  // Robust factory object — lazy Chrome start + isolated fallback if userDataDir is locked
-  const factory = {
+  // If a shared factory is provided (SSE mode), use it — all sessions share one Chrome context.
+  // Otherwise build a per-session factory with lazy Chrome start + isolated fallback.
+  const factory = prebuiltFactory || {
     createContext: async (options) => {
       // Lazy Chrome start: only when a browser context is actually needed
       if (sharedCdpMode && !(await isCdpAvailable())) {
@@ -304,6 +305,9 @@ program
       // sessionId → SSEServerTransport
       const transports = new Map();
 
+      // One shared factory for ALL sessions — ensures all agents share one Chrome window.
+      const sharedFactory = createSharedFactory(config, sharedCdpMode);
+
       const httpServer = http.createServer(async (req, res) => {
         try {
           const reqUrl = new URL(req.url, 'http://localhost');
@@ -338,9 +342,10 @@ program
               );
             };
 
-            // Each session gets its own connection + Context (tab isolation),
-            // but all connect to the already-running shared Chrome via CDP.
-            const connection = await createCustomConnection(config, sharedCdpMode);
+            // Each session gets its own MCP connection + Context wrapper,
+            // but all share ONE browser context (same Chrome window, same cookies).
+            // Tab ownership (ownerSessionId) prevents sessions from touching each other's tabs.
+            const connection = await createCustomConnection(config, sharedCdpMode, sessionId, sharedFactory);
             await connection.connect(transport);
 
             console.error(
