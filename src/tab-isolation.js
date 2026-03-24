@@ -655,6 +655,17 @@ function cleanupBySession(sessionId) {
   return cleaned;
 }
 
+function clearAll() {
+  for (const [, entry] of tabRegistry.entries()) {
+    if (entry._listeners) {
+      try { entry.page.off('close', entry._listeners.close); } catch (_) {}
+      try { entry.page.off('load', entry._listeners.load); } catch (_) {}
+    }
+  }
+  tabRegistry.clear();
+  saveRegistry();
+}
+
 module.exports = {
   tabIdSchema,
   generateTabId,
@@ -665,5 +676,6 @@ module.exports = {
   createEnhancedTabsTool,
   getTabRegistry,
   cleanupBySession,
+  clearAll,
   TAB_AWARE_TOOLS
 };

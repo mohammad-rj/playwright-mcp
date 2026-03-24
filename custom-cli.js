@@ -172,6 +172,18 @@ function createSharedFactory(rawConfig, sharedCdpMode) {
 
             if (browserContext) {
               console.error('[Playwright MCP] Attached to Chrome default context — no new window will open.');
+              // When Chrome closes or CDP disconnects, reset the singleton so the
+              // next browser tool call starts a fresh Chrome instead of returning
+              // a dead context ("Target page, context or browser has been closed").
+              const resetOnClose = () => {
+                console.error('[Playwright MCP] Chrome disconnected — resetting shared context.');
+                _contextPromise = null;
+                // Clear zombie tabs from the registry
+                const { clearAll } = require('./src/tab-isolation');
+                if (typeof clearAll === 'function') clearAll();
+              };
+              browser.on('disconnected', resetOnClose);
+              browserContext.on('close', resetOnClose);
               return { browserContext, close: async () => {} };
             }
             console.error('[Playwright MCP] contexts() empty after retries — falling back.');
