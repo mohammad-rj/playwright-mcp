@@ -107,12 +107,21 @@ async function ensureServerRunning() {
     try {
       log(`Starting SSE server on port ${SERVER_PORT}...`);
 
+      const LOG_FILE = path.join(__dirname, '.mcp', 'server.log');
+      const logFd = (() => {
+        try {
+          const dir = path.dirname(LOG_FILE);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          return fs.openSync(LOG_FILE, 'a');
+        } catch { return 'ignore'; }
+      })();
+
       const proc = spawn(
         'node',
         [SERVER_JS, '--port', String(SERVER_PORT), '--host', SERVER_HOST],
         {
           detached: true,
-          stdio:    'ignore',
+          stdio:    ['ignore', logFd, logFd],
           env:      process.env,
         }
       );
