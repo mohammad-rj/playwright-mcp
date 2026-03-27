@@ -178,6 +178,25 @@ function createSharedFactory(rawConfig, sharedCdpMode) {
               const resetOnClose = () => {
                 console.error('[Playwright MCP] Chrome disconnected — resetting shared context.');
                 _contextPromise = null;
+
+                // Also reset _browserContextPromise on all active Playwright Context objects.
+                // Without this, sessions that were open when Chrome died keep a stale reference
+                // to the dead browserContext and every subsequent browser call fails with
+                // "Target page, context or browser has been closed".
+                try {
+                  const { Context } = require(path.join(mcpPath, 'browser', 'context'));
+                  if (Context._allContexts) {
+                    for (const ctx of Context._allContexts) {
+                      ctx._browserContextPromise = void 0;
+                      if (Array.isArray(ctx._tabs)) ctx._tabs.length = 0;
+                      ctx._currentTab = null;
+                    }
+                    console.error(`[Playwright MCP] Reset ${Context._allContexts.size} active context(s).`);
+                  }
+                } catch (e) {
+                  console.error('[Playwright MCP] Failed to reset active contexts:', e.message);
+                }
+
                 // Clear zombie tabs from the registry
                 const { clearAll } = require('./src/tab-isolation');
                 if (typeof clearAll === 'function') clearAll();
