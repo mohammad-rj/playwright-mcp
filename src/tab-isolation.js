@@ -12,12 +12,7 @@
  */
 
 const path = require('path');
-const { z } = require('playwright-core/lib/mcpBundle');
-
-// Playwright internals
-const playwrightPath = path.dirname(require.resolve('playwright/package.json'));
-const mcpPath = path.join(playwrightPath, 'lib', 'mcp');
-const { filteredTools } = require(path.join(mcpPath, 'browser', 'tools'));
+const { z, filteredTools } = require('./pw');
 
 const fs = require('fs');
 
@@ -25,6 +20,21 @@ const fs = require('fs');
 const STORAGE_PATH = path.join(__dirname, '..', '.mcp', 'tabs.json');
 const MARKER_NAME = '__KIRO_MANAGED_TAB_ID__';
 const HEARTBEAT_TIMEOUT = 5 * 60 * 1000; // 5 minutes inactivity = zombie
+
+// Key under which CustomBrowserBackend stamps the owning SSE session id on the
+// Context. Tab ownership is recorded and enforced from this: the Context is
+// per-session and reaches every tool handler as the first argument.
+const SESSION_ID = Symbol.for('ep.playwright-mcp.sessionId');
+
+// The context handed to a wrapped tool is a Proxy, so read through whatever
+// target it forwards to rather than assuming a plain object.
+function sessionIdOf(context) {
+  try {
+    return context?.[SESSION_ID] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Update the heartbeat marker in the browser window
@@ -246,7 +256,7 @@ function wrapToolWithTabId(tool) {
       ...originalSchema,
       inputSchema: newInputSchema
     },
-    handle: async (context, params, response) => {
+    handle: async (context, params, response, signal) => {
       const { tabId, ...restParams } = params;
 
       if (!tabId || typeof tabId !== 'string' || tabId.length !== 6) {
@@ -262,7 +272,7 @@ function wrapToolWithTabId(tool) {
       const entry = tabRegistry.get(tabId);
       if (entry && entry.page) await updateHeartbeat(entry.page, tabId);
 
-      return await originalHandle(proxyContext, restParams, response);
+      return await originalHandle(proxyContext, restParams, response, signal);
     }
   };
 }
@@ -335,7 +345,7 @@ function createEnhancedTabsTool() {
       type: 'action'
     },
     capability: 'core-tabs',
-    handle: async (context, params, response) => {
+    handle: async (context, params, response, signal) => {
       // Ensure current process state matches browser state
       if (tabRegistry.size === 0) {
         await syncRegistryWithBrowser(context);
@@ -411,7 +421,7 @@ function createEnhancedTabsTool() {
             createdAt: new Date(),
             lastActivity: new Date(),
             title: 'New Tab',
-            ownerSessionId: response._sessionId || null,
+            ownerSessionId: sessionIdOf(context),
             _listeners: { close: closeListener, load: loadListener }
           });
 
@@ -450,7 +460,7 @@ function createEnhancedTabsTool() {
 
           let resultMsg = `## Tab Created\n**tabId: \`${tabId}\`**`;
           if (debugMsg) resultMsg += `\n\n_${debugMsg}_`;
-          response.addResult(resultMsg);
+          response.addTextResult(resultMsg);
           return;
           } catch (createError) {
             response.addError(`Failed to create tab: ${createError.message}`);
@@ -493,7 +503,7 @@ function createEnhancedTabsTool() {
           });
           saveRegistry();
 
-          response.addResult(`## Tab Reclaimed\nNew ID: \`${newId}\``);
+          response.addTextResult(`## Tab Reclaimed\nNew ID: \`${newId}\``);
           return;
         }
 
@@ -525,7 +535,7 @@ function createEnhancedTabsTool() {
             count++;
           }
 
-          response.addResult(`Purged ${count} abandoned AI tabs. Active AI tabs and User tabs were protected.`);
+          response.addTextResult(`Purged ${count} abandoned AI tabs. Active AI tabs and User tabs were protected.`);
           return;
         }
 
@@ -535,7 +545,8 @@ function createEnhancedTabsTool() {
           if (!entry) throw new Error('Tab not found.');
 
           // Only the owning session can close a tab
-          if (entry.ownerSessionId && response._sessionId && entry.ownerSessionId !== response._sessionId) {
+          const callerSession = sessionIdOf(context);
+          if (entry.ownerSessionId && callerSession && entry.ownerSessionId !== callerSession) {
             throw new Error(`Tab "${params.tabId}" belongs to another session. Cannot close.`);
           }
 
@@ -552,7 +563,7 @@ function createEnhancedTabsTool() {
 
           tabRegistry.delete(params.tabId);
           saveRegistry();
-          response.addResult(`Closed \`${params.tabId}\`.`);
+          response.addTextResult(`Closed \`${params.tabId}\`.`);
           return;
         }
 
@@ -614,7 +625,7 @@ function createEnhancedTabsTool() {
           output += `| Index | Tab ID | Status | Title | URL |\n|---|---|---|---|---|\n` + rows.join('\n');
           output += `\n\n**Guidelines:**\n- **User (Secure):** Private user tabs. DO NOT TOUCH.\n- **Active (Other Model/Session):** AI tabs in use by another session. DO NOT TOUCH.\n- **Orphan (Zombie):** Abandoned AI tabs. Clean with \`purge_zombies\`.`;
 
-          response.addResult(output);
+          response.addTextResult(output);
           return;
         }
 
@@ -667,6 +678,8 @@ function clearAll() {
 }
 
 module.exports = {
+  SESSION_ID,
+  sessionIdOf,
   tabIdSchema,
   generateTabId,
   getTabByStringId,

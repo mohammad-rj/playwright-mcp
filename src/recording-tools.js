@@ -10,7 +10,7 @@ const recordingManager = require('./recording-manager');
 const { getTabByStringId } = require('./tab-isolation');
 
 // Use zod from playwright-core bundle (compatible with zodToJsonSchema)
-const { z } = require('playwright-core/lib/mcpBundle');
+const { z } = require('./pw');
 
 /**
  * Create recording tools
@@ -23,12 +23,14 @@ function createRecordingTools() {
    */
   async function getPageSnapshot(page) {
     try {
-      // Try Playwright MCP's internal method first
-      if (typeof page._snapshotForAI === 'function') {
-        const snapshot = await page._snapshotForAI({ track: 'response' });
-        return snapshot.full || '';
+      // Try the public AI-mode aria snapshot first (returns the snapshot text
+      // directly, with element refs like [ref=e2] - same shape the old removed
+      // internal per-page AI-snapshot method used to produce).
+      if (typeof page.ariaSnapshot === 'function') {
+        const snapshot = await page.ariaSnapshot({ mode: 'ai' });
+        return snapshot || '';
       }
-      
+
       // Fallback to accessibility snapshot
       const snapshot = await page.accessibility.snapshot({ interestingOnly: false });
       if (snapshot) {
@@ -219,7 +221,7 @@ function createRecordingTools() {
       text += `- View snapshot: \`browser_recording_snapshot\` recordingId="${recordingId}" index=0\n`;
       text += `- Search: \`browser_recording_search\` recordingId="${recordingId}" query="..."\n`;
       
-      response.addResult(text);
+      response.addTextResult(text);
     }
   };
 
@@ -285,7 +287,7 @@ function createRecordingTools() {
         }
       }
       
-      response.addResult(text);
+      response.addTextResult(text);
     }
   };
 
@@ -324,7 +326,7 @@ function createRecordingTools() {
         text += `\n\n_More available. Next: startLine=${result.endLine + 1}_`;
       }
       
-      response.addResult(text);
+      response.addTextResult(text);
     }
   };
 
@@ -364,7 +366,7 @@ function createRecordingTools() {
         }
       }
       
-      response.addResult(text);
+      response.addTextResult(text);
     }
   };
 
@@ -402,7 +404,7 @@ function createRecordingTools() {
         }
       }
       
-      response.addResult(text);
+      response.addTextResult(text);
     }
   };
 
@@ -419,7 +421,7 @@ function createRecordingTools() {
       const list = recordingManager.listRecordings();
       
       if (list.length === 0) {
-        response.addResult('No recordings available.');
+        response.addTextResult('No recordings available.');
         return;
       }
       
@@ -432,7 +434,7 @@ function createRecordingTools() {
         text += `| \`${rec.id}\` | ${rec.actionType} | ${rec.totalSnapshots} | ${rec.durationMs}ms | ${status} |\n`;
       }
       
-      response.addResult(text);
+      response.addTextResult(text);
     }
   };
 
@@ -451,7 +453,7 @@ function createRecordingTools() {
       const deleted = recordingManager.deleteRecording(params.recordingId);
       
       if (deleted) {
-        response.addResult(`Recording ${params.recordingId} deleted.`);
+        response.addTextResult(`Recording ${params.recordingId} deleted.`);
       } else {
         response.addError(`Recording ${params.recordingId} not found.`);
       }

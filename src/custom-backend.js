@@ -1,80 +1,63 @@
 /**
  * Custom Browser Server Backend
- * 
+ *
  * Extends Playwright MCP with:
  * - Snapshot caching for large pages
  * - Recording system for debugging dynamic UI
  * - Tab isolation for multi-agent support
- * 
+ *
  * @module custom-backend
  */
 
-const path = require('path');
+const { z, BrowserBackend, filteredTools } = require('./pw');
 
-// Direct paths to playwright internals
-const playwrightPath = path.dirname(require.resolve('playwright/package.json'));
-const mcpPath = path.join(playwrightPath, 'lib', 'mcp');
-
-// Use zod from playwright-core bundle (compatible with zodToJsonSchema)
-const { z } = require('playwright-core/lib/mcpBundle');
-
-const { Context } = require(path.join(mcpPath, 'browser', 'context'));
-const { logUnhandledError } = require(path.join(mcpPath, 'log'));
-const { SessionLog } = require(path.join(mcpPath, 'browser', 'sessionLog'));
-const { toMcpTool } = require(path.join(mcpPath, 'sdk', 'tool'));
-const { Response: OriginalResponse } = require(path.join(mcpPath, 'browser', 'response'));
-
+const contextRegistry = require('./context-registry');
 const snapshotCache = require('./snapshot-cache');
 const recordingManager = require('./recording-manager');
 const { createRecordingTools } = require('./recording-tools');
 const outputCache = require('./output-cache');
-const { createTabAwareTools, createEnhancedTabsTool } = require('./tab-isolation');
+const { createTabAwareTools, createEnhancedTabsTool, getTabRegistry, SESSION_ID } = require('./tab-isolation');
 
-// Patched Response class - handles all large outputs
-class PatchedResponse extends OriginalResponse {
-  serialize(options = {}) {
-    const result = super.serialize(options);
-    
-    if (result.content?.[0]?.type === 'text') {
-      let text = result.content[0].text;
-      
-      // FIRST: Check if ENTIRE output is too large (regardless of content type)
-      // This catches cases where console messages + snapshot together are huge
-      if (outputCache.needsCaching(text)) {
-        const toolName = this._name || 'unknown';
-        const { cacheId, totalLines, preview } = outputCache.cacheOutput(text, toolName);
-        result.content[0].text = outputCache.formatCacheMessage(cacheId, totalLines, toolName, preview);
-        return result;
-      }
-      
-      // SECOND: Handle snapshot-specific caching (YAML blocks only)
-      // This is for when snapshot alone is large but total output is manageable
-      const yamlMatch = text.match(/```yaml\n([\s\S]*?)\n```/);
-      if (yamlMatch?.[1] && snapshotCache.needsPagination(yamlMatch[1])) {
-        const snapshotContent = yamlMatch[1];
-        const urlMatch = text.match(/- Page URL: (.+)/);
-        const titleMatch = text.match(/- Page Title: (.+)/);
-        const url = urlMatch?.[1] || 'unknown';
-        const title = titleMatch?.[1] || 'unknown';
-        
-        const { cacheId, totalLines, structureHints } = snapshotCache.cacheSnapshot(
-          snapshotContent, url, title
-        );
-        
-        const paginationMsg = snapshotCache.formatPaginationMessage(
-          cacheId, totalLines, url, title, structureHints
-        );
-        
-        text = text.replace(
-          /- Page Snapshot:\n```yaml\n[\s\S]*?\n```/,
-          paginationMsg
-        );
-        result.content[0].text = text;
-      }
-    }
-    
-    return result;
+// Apply the snapshot/output caching logic to one text content item. This is
+// the same logic that used to live inside PatchedResponse.serialize() on
+// playwright 1.58 (which subclassed the internal Response class). 1.62's
+// BrowserBackend.callTool() builds and serializes its Response internally and
+// there is no Response class left to subclass, so instead we post-process the
+// already-serialized text ourselves, from CustomBrowserBackend.callTool().
+// Returns the (possibly rewritten) text.
+function applyCaching(text, toolName) {
+  // FIRST: Check if ENTIRE output is too large (regardless of content type)
+  // This catches cases where console messages + snapshot together are huge
+  if (outputCache.needsCaching(text)) {
+    const { cacheId, totalLines, preview } = outputCache.cacheOutput(text, toolName);
+    return outputCache.formatCacheMessage(cacheId, totalLines, toolName, preview);
   }
+
+  // SECOND: Handle snapshot-specific caching (YAML blocks only)
+  // This is for when snapshot alone is large but total output is manageable
+  const yamlMatch = text.match(/```yaml\n([\s\S]*?)\n```/);
+  if (yamlMatch?.[1] && snapshotCache.needsPagination(yamlMatch[1])) {
+    const snapshotContent = yamlMatch[1];
+    const urlMatch = text.match(/- Page URL: (.+)/);
+    const titleMatch = text.match(/- Page Title: (.+)/);
+    const url = urlMatch?.[1] || 'unknown';
+    const title = titleMatch?.[1] || 'unknown';
+
+    const { cacheId, totalLines, structureHints } = snapshotCache.cacheSnapshot(
+      snapshotContent, url, title
+    );
+
+    const paginationMsg = snapshotCache.formatPaginationMessage(
+      cacheId, totalLines, url, title, structureHints
+    );
+
+    return text.replace(
+      /- Page Snapshot:\n```yaml\n[\s\S]*?\n```/,
+      paginationMsg
+    );
+  }
+
+  return text;
 }
 
 // Custom tools for cache navigation - using real zod schemas
@@ -108,7 +91,7 @@ const getCachedSnapshotTool = {
     if (result.hasMore) {
       text += `\n\n_More available. Next: startLine=${result.endLine + 1}_`;
     }
-    response.addResult(text);
+    response.addTextResult(text);
   }
 };
 
@@ -141,7 +124,7 @@ const searchCachedSnapshotTool = {
     for (const match of result.results) {
       text += `Line ${match.line}: ${match.content}\n`;
     }
-    response.addResult(text);
+    response.addTextResult(text);
   }
 };
 
@@ -176,7 +159,7 @@ const getCachedOutputTool = {
     if (result.hasMore) {
       text += `\n\n_More available. Next: startLine=${result.endLine + 1}_`;
     }
-    response.addResult(text);
+    response.addTextResult(text);
   }
 };
 
@@ -209,7 +192,7 @@ const searchCachedOutputTool = {
     for (const match of result.results) {
       text += `**L${match.line}:** ${match.content}\n`;
     }
-    response.addResult(text);
+    response.addTextResult(text);
   }
 };
 
@@ -235,18 +218,27 @@ function createSetEngineTool(engineState) {
     handle: async (context, params, response) => {
       const prev = engineState.engine || 'chromium';
       if (params.engine === prev) {
-        response.addResult(`Already on ${prev}. No change.`);
+        response.addTextResult(`Already on ${prev}. No change.`);
         return;
       }
       engineState.engine = params.engine;
-      // Drop this session's view of the old engine so the next browser action
-      // rebuilds against the newly-selected engine's pooled context.
+      // 1.62's Context no longer has a lazy browserContextFactory to re-invoke -
+      // it holds a fixed _rawBrowserContext set at construction time. So switching
+      // engines means fetching the new engine's pooled context ourselves and
+      // swapping it in directly, then dropping this session's cached tab state
+      // so the next browser action rebuilds against it.
       try {
-        context._browserContextPromise = void 0;
+        if (typeof engineState.resolveContext === 'function') {
+          const newContext = await engineState.resolveContext(params.engine);
+          if (newContext) context._rawBrowserContext = newContext;
+        }
+        // ensureBrowserContext() memoises the old engine's context; drop the
+        // memo so the next action re-initialises against the new engine.
+        context._browserContextPromise = undefined;
         if (Array.isArray(context._tabs)) context._tabs.length = 0;
-        context._currentTab = null;
-      } catch (e) { /* best effort — fields are internal to Playwright's Context */ }
-      response.addResult(
+        context._currentTab = undefined;
+      } catch (e) { /* best effort - fields are internal to Playwright's Context */ }
+      response.addTextResult(
         `Browser engine switched: ${prev} -> ${params.engine}. ` +
         `The next browser action will open in ${params.engine}. ` +
         `(Chromium stays available — switch back any time with engine="chromium".)`
@@ -255,99 +247,155 @@ function createSetEngineTool(engineState) {
   };
 }
 
-class CustomBrowserServerBackend {
-  constructor(config, factory, engineState = null) {
-    this._config = config;
-    this._browserContextFactory = factory;
+// Build the full tool list: filteredTools(config), tab-isolation-wrapped, plus
+// all of this fork's custom tools. Built BEFORE the backend is constructed
+// because BrowserBackend's constructor takes the tool list as a plain array
+// (super(config, browserContext, toolList)) rather than building it itself.
+// Tools that block waiting for a human and would therefore hang an agent.
+// browser_annotate opens the Playwright Dashboard in annotation mode and does
+// not return until someone draws on the page. It ships in the same 'devtools'
+// capability as tracing and video recording, which are genuinely useful here,
+// so the capability stays enabled and this one tool is dropped instead.
+const BLOCKING_TOOLS = new Set(['browser_annotate']);
+
+function buildToolList(config, engineState = null) {
+  const recordingTools = createRecordingTools();
+
+  // Use tab-aware tools instead of original filteredTools
+  const tabAwareTools = createTabAwareTools(config);
+  const enhancedTabsTool = createEnhancedTabsTool();
+
+  // Override browser_take_screenshot: abort fonts before capture so the tool
+  // never hangs waiting for woff/woff2 files that Chrome treats as downloads.
+  const screenshotTool = tabAwareTools.find(t => t.schema.name === 'browser_take_screenshot');
+  if (screenshotTool) {
+    const _origScreenshot = screenshotTool.handle;
+    screenshotTool.handle = async (context, params, response, signal) => {
+      const entry = getTabRegistry().get(params.tabId);
+      const page = entry?.page;
+      const FONT_GLOB = '**/*.{woff,woff2,ttf,otf,eot}';
+      if (page) await page.route(FONT_GLOB, r => r.abort()).catch(() => {});
+      try {
+        return await _origScreenshot(context, params, response, signal);
+      } finally {
+        if (page) await page.unroute(FONT_GLOB).catch(() => {});
+      }
+    };
+  }
+
+  const toolList = [
+    ...tabAwareTools.filter(t => !BLOCKING_TOOLS.has(t.schema.name)),
+    enhancedTabsTool,
+    getCachedSnapshotTool,
+    searchCachedSnapshotTool,
+    getCachedOutputTool,
+    searchCachedOutputTool,
+    ...recordingTools
+  ];
+
+  // Expose the engine selector only when a session engineState is wired in.
+  if (engineState) {
+    toolList.push(createSetEngineTool(engineState));
+  }
+
+  return toolList;
+}
+
+class CustomBrowserBackend extends BrowserBackend {
+  constructor(config, browserContext, toolList, engineState = null, sessionId = null) {
+    super(config, browserContext, toolList);
     this._engineState = engineState;
-    
-    // Get custom tools
-    const recordingTools = createRecordingTools();
-    
-    // Use tab-aware tools instead of original filteredTools
-    const tabAwareTools = createTabAwareTools(config);
-    const enhancedTabsTool = createEnhancedTabsTool();
-
-    // Override browser_take_screenshot: abort fonts before capture so the tool
-    // never hangs waiting for woff/woff2 files that Chrome treats as downloads.
-    const screenshotTool = tabAwareTools.find(t => t.schema.name === 'browser_take_screenshot');
-    if (screenshotTool) {
-      const _origScreenshot = screenshotTool.handle;
-      screenshotTool.handle = async (context, params, response) => {
-        const { getTabRegistry } = require('./tab-isolation');
-        const entry = getTabRegistry().get(params.tabId);
-        const page = entry?.page;
-        const FONT_GLOB = '**/*.{woff,woff2,ttf,otf,eot}';
-        if (page) await page.route(FONT_GLOB, r => r.abort()).catch(() => {});
-        try {
-          return await _origScreenshot(context, params, response);
-        } finally {
-          if (page) await page.unroute(FONT_GLOB).catch(() => {});
-        }
-      };
-    }
-
-    this._tools = [
-      ...tabAwareTools,
-      enhancedTabsTool,
-      getCachedSnapshotTool,
-      searchCachedSnapshotTool,
-      getCachedOutputTool,
-      searchCachedOutputTool,
-      ...recordingTools
-    ];
-
-    // Expose the engine selector only when a session engineState is wired in.
-    if (engineState) {
-      this._tools.push(createSetEngineTool(engineState));
-    }
+    this._sessionId = sessionId;
   }
 
   async initialize(clientInfo) {
-    this._sessionLog = this._config.saveSession 
-      ? await SessionLog.create(this._config, clientInfo) 
-      : undefined;
-    this._context = new Context({
-      config: this._config,
-      browserContextFactory: this._browserContextFactory,
-      sessionLog: this._sessionLog,
-      clientInfo
-    });
+    await super.initialize(clientInfo);
+
+    // Stamp the SSE session id on the Context so tab-isolation can record and
+    // enforce tab ownership. It used to read response._sessionId, but nothing
+    // ever set that - on 1.58 too - so every tab was recorded with a null
+    // owner and the "belongs to another session" guard never actually fired.
+    // The Context is the right carrier: it is per-session and every tool
+    // handler receives it as its first argument.
+    if (this._context) this._context[SESSION_ID] = this._sessionId;
+
+    contextRegistry.register(this._context, this);
   }
 
-  async listTools() {
-    return this._tools.map(tool => toMcpTool(tool.schema));
-  }
+  /**
+   * Re-point this session at a live browser context after its previous one
+   * died (Chrome closed, engine window closed). 1.62 holds the context by
+   * value rather than behind a lazy promise, so recovery means swapping the
+   * reference on both the backend and its Context, and re-arming the
+   * disconnect watch that BrowserBackend's constructor set up once.
+   *
+   * Called lazily from callTool(), so a dead browser is only relaunched when
+   * a tool actually needs it.
+   */
+  async _refreshBrowserContext() {
+    const engine = this._engineState?.engine || 'chromium';
+    if (typeof this._engineState?.resolveContext !== 'function') return;
 
-  async callTool(name, rawArguments) {
-    const tool = this._tools.find(t => t.schema.name === name);
-    if (!tool) throw new Error(`Tool "${name}" not found`);
+    const fresh = await this._engineState.resolveContext(engine);
+    if (!fresh) return;
 
-    const parsedArguments = tool.schema.inputSchema.parse(rawArguments || {});
-    const response = new PatchedResponse(this._context, name, parsedArguments);
-    
-    response.logBegin();
-    this._context.setRunningTool(name);
-    
-    try {
-      await tool.handle(this._context, parsedArguments, response);
-      await response.finish();
-      this._sessionLog?.logResponse(response);
-    } catch (error) {
-      response.addError(String(error));
-    } finally {
-      this._context.setRunningTool(undefined);
+    this.browserContext = fresh;
+    if (this._context) {
+      this._context._rawBrowserContext = fresh;
+      // ensureBrowserContext() memoises into _browserContextPromise, and that
+      // memo still points at the dead browser. Drop it so the next call
+      // re-initialises (request interception, init scripts, page listeners)
+      // against the fresh context.
+      this._context._browserContextPromise = undefined;
     }
-    
-    response.logEnd();
-    return response.serialize();
+
+    // BrowserBackend latches _disconnected via once() listeners bound to the
+    // OLD context, so both the flag and the listeners have to be renewed -
+    // otherwise every later response carries isClose and the client hangs up.
+    this._disconnected = false;
+    const markDisconnected = () => { this._disconnected = true; };
+    fresh.once('close', markDisconnected);
+    fresh.browser()?.once('disconnected', markDisconnected);
+
+    contextRegistry.clearStale(this._context);
   }
 
-  serverClosed() {
-    // Cleanup recordings on browser close
+  async dispose() {
+    contextRegistry.unregister(this._context);
+    await super.dispose();
+  }
+
+  // Mirrors the 1.58 backend's serverClosed(): clean up recordings, then
+  // dispose the context. mcp-server.js calls backend.serverClosed?.() when
+  // the MCP server connection closes.
+  async serverClosed() {
     recordingManager.cleanupAll();
-    this._context?.dispose().catch(logUnhandledError);
+    await this.dispose();
+  }
+
+  async callTool(name, rawArguments, signal) {
+    // Recover from a browser that died since the last call, before the tool
+    // runs against a dead reference.
+    if (contextRegistry.isStale(this._context)) {
+      try {
+        await this._refreshBrowserContext();
+      } catch (e) {
+        console.error('[Playwright MCP] Failed to refresh browser context:', e.message);
+      }
+    }
+
+    const result = await super.callTool(name, rawArguments, signal);
+
+    if (Array.isArray(result?.content)) {
+      for (const part of result.content) {
+        if (part?.type === 'text' && typeof part.text === 'string') {
+          part.text = applyCaching(part.text, name);
+        }
+      }
+    }
+
+    return result;
   }
 }
 
-module.exports = { CustomBrowserServerBackend };
+module.exports = { CustomBrowserBackend, buildToolList };
