@@ -28,5 +28,9 @@
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@playwright/test": "1.59.0-alpha-1773608981000",
     "@types/node": "^24.3.0"
+  },
+  "dependencies": {
+    "playwright": "^1.58.0-alpha-1766189059000",
+    "playwright-core": "^1.58.0-alpha-1766189059000"
   }
 }

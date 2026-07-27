@@ -213,10 +213,53 @@ const searchCachedOutputTool = {
   }
 };
 
+// Per-session engine selector. `engineState` is shared with the engine-aware
+// factory in custom-cli.js, so setting it here changes which browser the next
+// browser action opens in. Switching drops this session's cached browser context
+// (and its tab list) so the next action rebuilds against the new engine.
+function createSetEngineTool(engineState) {
+  return {
+    schema: {
+      name: 'browser_set_engine',
+      title: 'Select browser engine',
+      description:
+        'Choose the browser engine for the CURRENT session: "chromium" (default; attaches to the shared system Chrome with its real profile and logins), "firefox", or "webkit". ' +
+        'Switching resets this session\'s open tabs; the next browser_navigate opens in the chosen engine. Chromium and a launched engine (firefox/webkit) can be live at the same time across sessions. ' +
+        'Only call this when you need a non-Chrome browser (e.g. cross-browser testing) — the default is already chromium.',
+      inputSchema: z.object({
+        engine: z.enum(['chromium', 'firefox', 'webkit']).describe('Browser engine to drive for this session')
+      }),
+      type: 'readOnly'
+    },
+    capability: 'core',
+    handle: async (context, params, response) => {
+      const prev = engineState.engine || 'chromium';
+      if (params.engine === prev) {
+        response.addResult(`Already on ${prev}. No change.`);
+        return;
+      }
+      engineState.engine = params.engine;
+      // Drop this session's view of the old engine so the next browser action
+      // rebuilds against the newly-selected engine's pooled context.
+      try {
+        context._browserContextPromise = void 0;
+        if (Array.isArray(context._tabs)) context._tabs.length = 0;
+        context._currentTab = null;
+      } catch (e) { /* best effort — fields are internal to Playwright's Context */ }
+      response.addResult(
+        `Browser engine switched: ${prev} -> ${params.engine}. ` +
+        `The next browser action will open in ${params.engine}. ` +
+        `(Chromium stays available — switch back any time with engine="chromium".)`
+      );
+    }
+  };
+}
+
 class CustomBrowserServerBackend {
-  constructor(config, factory) {
+  constructor(config, factory, engineState = null) {
     this._config = config;
     this._browserContextFactory = factory;
+    this._engineState = engineState;
     
     // Get custom tools
     const recordingTools = createRecordingTools();
@@ -253,6 +296,11 @@ class CustomBrowserServerBackend {
       searchCachedOutputTool,
       ...recordingTools
     ];
+
+    // Expose the engine selector only when a session engineState is wired in.
+    if (engineState) {
+      this._tools.push(createSetEngineTool(engineState));
+    }
   }
 
   async initialize(clientInfo) {

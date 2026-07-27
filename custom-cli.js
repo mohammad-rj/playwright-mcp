@@ -90,10 +90,20 @@ async function ensureChromeWithCDP() {
     return null;
   }
 
+  // Unpacked Chrome extensions to load, as an OS-path-separator-delimited list
+  // (PLAYWRIGHT_MCP_LOAD_EXTENSIONS). Kept out of the source so this fork carries
+  // no machine-specific paths.
+  const extensions = (process.env.PLAYWRIGHT_MCP_LOAD_EXTENSIONS || '')
+    .split(path.delimiter)
+    .map(p => p.trim())
+    .filter(Boolean);
+
   // Launch Chrome detached
   const chromeProcess = spawn(chromePath, [
     `--remote-debugging-port=${CDP_PORT}`,
     `--user-data-dir=${CDP_USER_DATA_DIR}`,
+    ...(extensions.length ? [`--load-extension=${extensions.join(',')}`] : []),
+    '--allow-insecure-localhost',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-infobars',
@@ -105,14 +115,15 @@ async function ensureChromeWithCDP() {
     '--no-service-autorun',
     '--password-store=basic',
     '--use-mock-keychain',
+    '--disable-restore-session-state',  // skip crash-recovery delay when profile has exit_type=Crashed
   ], {
     detached: true,
     stdio: 'ignore'
   });
   chromeProcess.unref();
 
-  // Wait for CDP to be available
-  for (let i = 0; i < 30; i++) {
+  // Wait for CDP to be available (up to 15s — crash-recovery profiles need more time)
+  for (let i = 0; i < 75; i++) {
     await new Promise(r => setTimeout(r, 200));
     if (await isCdpAvailable()) {
       console.error(`[Playwright MCP] Chrome started successfully`);
@@ -124,155 +135,175 @@ async function ensureChromeWithCDP() {
   return null;
 }
 
+// ── Engine pool: one shared browser context PER engine ───────────────────────
+//
+//   chromium → attaches to the real system Chrome over CDP (shared login/cookies)
+//   firefox / webkit → launches its own browser via Playwright's contextFactory
+//
+// All sessions that select the same engine share that engine's single context
+// (mirroring the original "everyone shares one Chrome" behaviour) — but keyed by
+// engine, so Chrome and Firefox can be live at the same time. A session picks its
+// engine via the browser_set_engine tool; the default is chromium.
+const enginePool = new Map(); // engine → Promise<{ browserContext, close }>
+
+// Reset every active Playwright Context's cached browser context. Used when a
+// pooled browser dies, so sessions don't keep a dead reference and fail with
+// "Target page, context or browser has been closed".
+function resetActiveContexts(reason) {
+  try {
+    const { Context } = require(path.join(mcpPath, 'browser', 'context'));
+    if (Context._allContexts) {
+      for (const ctx of Context._allContexts) {
+        ctx._browserContextPromise = void 0;
+        if (Array.isArray(ctx._tabs)) ctx._tabs.length = 0;
+        ctx._currentTab = null;
+      }
+      console.error(`[Playwright MCP] ${reason} — reset ${Context._allContexts.size} active context(s).`);
+    }
+  } catch (e) {
+    console.error('[Playwright MCP] Failed to reset active contexts:', e.message);
+  }
+  try {
+    const { clearAll } = require('./src/tab-isolation');
+    if (typeof clearAll === 'function') clearAll();
+  } catch { /* tab-isolation not loaded */ }
+}
+
+// Build the chromium context: attach to the real system Chrome over CDP.
+async function buildChromiumContext(rawConfig, sharedCdpMode) {
+  const config = await resolveConfig(rawConfig);
+
+  let cdpEndpoint = config.browser?.cdpEndpoint;
+  if (!cdpEndpoint && sharedCdpMode) {
+    if (!(await isCdpAvailable())) {
+      console.error('[Playwright MCP] Chrome not running — starting...');
+      const ep = await ensureChromeWithCDP();
+      if (ep) cdpEndpoint = ep;
+    } else {
+      cdpEndpoint = `http://127.0.0.1:${CDP_PORT}`;
+    }
+  }
+
+  if (cdpEndpoint) {
+    try {
+      const { chromium } = require('playwright');
+      const browser = await chromium.connectOverCDP(cdpEndpoint);
+
+      // Retry: Chrome may take a moment to expose the default context
+      let browserContext;
+      for (let i = 0; i < 15; i++) {
+        const ctxs = browser.contexts();
+        if (ctxs.length > 0) { browserContext = ctxs[0]; break; }
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      if (browserContext) {
+        console.error('[Playwright MCP] Attached to Chrome default context — no new window will open.');
+        const resetOnClose = () => {
+          console.error('[Playwright MCP] Chrome disconnected — resetting chromium pool.');
+          enginePool.delete('chromium');
+          resetActiveContexts('Chrome disconnected');
+        };
+        browser.on('disconnected', resetOnClose);
+        browserContext.on('close', resetOnClose);
+        return { browserContext, close: async () => {} };
+      }
+      console.error('[Playwright MCP] contexts() empty after retries — falling back.');
+    } catch (e) {
+      console.error('[Playwright MCP] CDP attach failed:', e.message, '— falling back.');
+    }
+  }
+
+  // Fallback: contextFactory (may open a new window, but at least it works)
+  if (cdpEndpoint) config.browser = { ...config.browser, cdpEndpoint };
+  try {
+    return await contextFactory(config).createContext({ roots: [] });
+  } catch (e) {
+    if (e.message.includes('already in use') && config.browser?.userDataDir) {
+      const isolated = { ...config, browser: { ...config.browser } };
+      delete isolated.browser.userDataDir;
+      return await contextFactory(isolated).createContext({ roots: [] });
+    }
+    throw e;
+  }
+}
+
+// Build a launched-browser context (firefox / webkit). Unlike chromium these
+// have no CDP-attach path — Playwright owns the browser process. We strip any
+// chromium-only options (cdpEndpoint / userDataDir) before launching.
+async function buildLaunchedContext(rawConfig, engine) {
+  console.error(`[Playwright MCP] Launching ${engine}...`);
+  const browserOpts = { ...(rawConfig.browser || {}) };
+  delete browserOpts.cdpEndpoint;
+  delete browserOpts.userDataDir;
+  browserOpts.browserName = engine;
+
+  const cfg = await resolveConfig({ ...rawConfig, browser: browserOpts });
+  const result = await contextFactory(cfg).createContext({ roots: [] });
+
+  // Reset the pool if the user closes the browser window manually.
+  try {
+    const reset = () => {
+      console.error(`[Playwright MCP] ${engine} disconnected — resetting pool.`);
+      enginePool.delete(engine);
+      resetActiveContexts(`${engine} disconnected`);
+    };
+    result.browserContext?.on?.('close', reset);
+    result.browserContext?.browser?.()?.on?.('disconnected', reset);
+  } catch { /* best effort */ }
+
+  return result;
+}
+
+// Get (or lazily create) the shared context for an engine.
+function getEngineContext(engine, rawConfig, sharedCdpMode) {
+  if (enginePool.has(engine)) return enginePool.get(engine);
+  const attempt = (engine === 'chromium')
+    ? buildChromiumContext(rawConfig, sharedCdpMode)
+    : buildLaunchedContext(rawConfig, engine);
+  enginePool.set(engine, attempt);
+  // Reset on failure so the next call retries (prevents permanently broken state)
+  attempt.catch(() => { if (enginePool.get(engine) === attempt) enginePool.delete(engine); });
+  return enginePool.get(engine);
+}
+
 /**
- * Create a shared browser factory — the underlying browser context is created
- * once and reused by all SSE sessions. This ensures all agents share the same
- * Chrome window (and therefore the same login state / cookies).
+ * Per-session factory: resolves the browser context for whatever engine the
+ * session currently has selected. The engine is read fresh on each createContext
+ * call (via the shared engineState object), so switching engines mid-session
+ * just needs the session's Context to drop its cached _browserContextPromise.
  *
- * @param {object} rawConfig  - Raw user config (browser options, etc.)
+ * @param {{ engine: string }} engineState  - mutable, shared with browser_set_engine
+ * @param {object} rawConfig
  * @param {boolean} sharedCdpMode
- * @returns {{ createContext: Function }}
  */
-function createSharedFactory(rawConfig, sharedCdpMode) {
-  // Promise singleton — one context for all sessions, created lazily on first use.
-  let _contextPromise = null;
-
+function createEngineAwareFactory(engineState, rawConfig, sharedCdpMode) {
   return {
-    createContext: async (clientInfo) => {
-      if (_contextPromise) return _contextPromise;
-
-      const attempt = (async () => {
-        const config = await resolveConfig(rawConfig);
-
-        // Ensure Chrome is running, get cdpEndpoint
-        let cdpEndpoint = config.browser?.cdpEndpoint;
-
-        if (!cdpEndpoint && sharedCdpMode) {
-          if (!(await isCdpAvailable())) {
-            console.error('[Playwright MCP] Chrome not running — starting...');
-            const ep = await ensureChromeWithCDP();
-            if (ep) cdpEndpoint = ep;
-          } else {
-            cdpEndpoint = `http://127.0.0.1:${CDP_PORT}`;
-          }
-        }
-
-        if (cdpEndpoint) {
-          try {
-            const { chromium } = require('playwright');
-            const browser = await chromium.connectOverCDP(cdpEndpoint);
-
-            // Retry: Chrome may take a moment to expose the default context
-            let browserContext;
-            for (let i = 0; i < 15; i++) {
-              const ctxs = browser.contexts();
-              if (ctxs.length > 0) { browserContext = ctxs[0]; break; }
-              await new Promise(r => setTimeout(r, 200));
-            }
-
-            if (browserContext) {
-              console.error('[Playwright MCP] Attached to Chrome default context — no new window will open.');
-              // When Chrome closes or CDP disconnects, reset the singleton so the
-              // next browser tool call starts a fresh Chrome instead of returning
-              // a dead context ("Target page, context or browser has been closed").
-              const resetOnClose = () => {
-                console.error('[Playwright MCP] Chrome disconnected — resetting shared context.');
-                _contextPromise = null;
-
-                // Also reset _browserContextPromise on all active Playwright Context objects.
-                // Without this, sessions that were open when Chrome died keep a stale reference
-                // to the dead browserContext and every subsequent browser call fails with
-                // "Target page, context or browser has been closed".
-                try {
-                  const { Context } = require(path.join(mcpPath, 'browser', 'context'));
-                  if (Context._allContexts) {
-                    for (const ctx of Context._allContexts) {
-                      ctx._browserContextPromise = void 0;
-                      if (Array.isArray(ctx._tabs)) ctx._tabs.length = 0;
-                      ctx._currentTab = null;
-                    }
-                    console.error(`[Playwright MCP] Reset ${Context._allContexts.size} active context(s).`);
-                  }
-                } catch (e) {
-                  console.error('[Playwright MCP] Failed to reset active contexts:', e.message);
-                }
-
-                // Clear zombie tabs from the registry
-                const { clearAll } = require('./src/tab-isolation');
-                if (typeof clearAll === 'function') clearAll();
-              };
-              browser.on('disconnected', resetOnClose);
-              browserContext.on('close', resetOnClose);
-              return { browserContext, close: async () => {} };
-            }
-            console.error('[Playwright MCP] contexts() empty after retries — falling back.');
-          } catch (e) {
-            console.error('[Playwright MCP] CDP attach failed:', e.message, '— falling back.');
-          }
-        }
-
-        // Fallback: contextFactory (may open a new window, but at least it works)
-        if (cdpEndpoint) config.browser = { ...config.browser, cdpEndpoint };
-        try {
-          return await contextFactory(config).createContext(clientInfo);
-        } catch (e) {
-          if (e.message.includes('already in use') && config.browser?.userDataDir) {
-            const isolated = { ...config, browser: { ...config.browser } };
-            delete isolated.browser.userDataDir;
-            return await contextFactory(isolated).createContext(clientInfo);
-          }
-          throw e;
-        }
-      })();
-
-      // Reset on failure so the next call retries (prevents permanently broken state)
-      _contextPromise = attempt;
-      attempt.catch(() => { _contextPromise = null; });
-
-      return _contextPromise;
+    createContext: async () => {
+      const engine = engineState.engine || 'chromium';
+      const { browserContext } = await getEngineContext(engine, rawConfig, sharedCdpMode);
+      // Never close the shared pool context when a single session ends.
+      return { browserContext, close: async () => {} };
     }
   };
 }
 
-async function createCustomConnection(userConfig = {}, sharedCdpMode = false, sessionId = null, prebuiltFactory = null) {
+async function createCustomConnection(userConfig = {}, sharedCdpMode = false, sessionId = null) {
   const config = await resolveConfig(userConfig);
 
-  // If a shared factory is provided (SSE mode), use it — all sessions share one Chrome context.
-  // Otherwise build a per-session factory with lazy Chrome start + isolated fallback.
-  const factory = prebuiltFactory || {
-    createContext: async (options) => {
-      // Lazy Chrome start: only when a browser context is actually needed
-      if (sharedCdpMode && !(await isCdpAvailable())) {
-        console.error('[Playwright MCP] Chrome not running — starting...');
-        const newEndpoint = await ensureChromeWithCDP();
-        if (newEndpoint) {
-          config.browser = { ...config.browser, cdpEndpoint: newEndpoint };
-        } else if (config.browser) {
-          delete config.browser.cdpEndpoint;
-        }
-      }
+  // Per-session engine selection. Default to whatever browser was configured at
+  // startup (chromium unless --browser overrode it). browser_set_engine mutates
+  // engineState.engine; the engine-aware factory reads it on each createContext.
+  const engineState = { engine: config.browser?.browserName || userConfig.browser?.browserName || 'chromium' };
 
-      try {
-        return await contextFactory(config).createContext(options);
-      } catch (e) {
-        if (e.message.includes('already in use') && config.browser?.userDataDir) {
-          console.error(`\n[WARNING] User Data Directory is locked by another session: ${config.browser.userDataDir}`);
-          console.error(`[WARNING] Falling back to isolated temporary directory to prevent crash.\n`);
-
-          const isolatedConfig = { ...config, browser: { ...config.browser } };
-          delete isolatedConfig.browser.userDataDir;
-
-          return await contextFactory(isolatedConfig).createContext(options);
-        }
-        throw e;
-      }
-    }
-  };
+  // The engine pool (module-level) provides cross-session sharing per engine, so
+  // every session uses its own factory wrapper over the same shared pool.
+  const factory = createEngineAwareFactory(engineState, userConfig, sharedCdpMode);
 
   return mcpServer.createServer(
     'Playwright-Custom',
     packageJSON.version,
-    new CustomBrowserServerBackend(config, factory),
+    new CustomBrowserServerBackend(config, factory, engineState),
     false
   );
 }
@@ -336,8 +367,9 @@ program
       // sessionId → SSEServerTransport
       const transports = new Map();
 
-      // One shared factory for ALL sessions — ensures all agents share one Chrome window.
-      const sharedFactory = createSharedFactory(config, sharedCdpMode);
+      // Sharing now happens in the module-level engine pool (one context per
+      // engine), so each session gets its own engine-aware factory built inside
+      // createCustomConnection — no single shared factory needed here.
 
       const httpServer = http.createServer(async (req, res) => {
         try {
@@ -376,7 +408,7 @@ program
             // Each session gets its own MCP connection + Context wrapper,
             // but all share ONE browser context (same Chrome window, same cookies).
             // Tab ownership (ownerSessionId) prevents sessions from touching each other's tabs.
-            const connection = await createCustomConnection(config, sharedCdpMode, sessionId, sharedFactory);
+            const connection = await createCustomConnection(config, sharedCdpMode, sessionId);
             await connection.connect(transport);
 
             console.error(
