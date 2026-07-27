@@ -20,7 +20,7 @@ const fs = require('fs')
 const path = require('path')
 const { execSync } = require('child_process');
 
-const { browserTools } = require('playwright-core/lib/tools/exports');
+const { tools } = require('playwright-core/lib/coreBundle');
 
 const capabilities = /** @type {Record<string, string>} */ ({
   'core-navigation': 'Core automation',
@@ -38,7 +38,7 @@ const capabilities = /** @type {Record<string, string>} */ ({
 });
 
 const knownCapabilities = new Set(Object.keys(capabilities));
-const unknownCapabilities = [...new Set(browserTools.map(tool => tool.capability))].filter(cap => !knownCapabilities.has(cap));
+const unknownCapabilities = [...new Set(tools.browserTools.map(tool => tool.capability))].filter(cap => !knownCapabilities.has(cap));
 if (unknownCapabilities.length)
   throw new Error(`Unknown tool capabilities: ${unknownCapabilities.join(', ')}. Please update the capabilities map in ${path.basename(__filename)}.`);
 
@@ -46,9 +46,9 @@ if (unknownCapabilities.length)
 const toolsByCapability = {};
 for (const capability of Object.keys(capabilities)) {
   const title = capabilityTitle(capability);
-  let tools = browserTools.filter(tool => tool.capability === capability && !tool.skillOnly);
-  tools = (toolsByCapability[title] || []).concat(tools);
-  toolsByCapability[title] = tools;
+  let filteredTools = tools.browserTools.filter(tool => tool.capability === capability && !tool.skillOnly);
+  filteredTools = (toolsByCapability[title] || []).concat(filteredTools);
+  toolsByCapability[title] = filteredTools;
 }
 for (const [, tools] of Object.entries(toolsByCapability))
   tools.sort((a, b) => a.schema.name.localeCompare(b.schema.name));
@@ -141,6 +141,18 @@ async function updateTools(content) {
 }
 
 /**
+ * @param {string} prefix
+ * @returns {string}
+ */
+function optionEnvName(prefix) {
+  if (prefix === 'secrets')
+    return 'PLAYWRIGHT_MCP_SECRETS_FILE';
+  if (prefix === 'cdp-header')
+    return 'PLAYWRIGHT_MCP_CDP_HEADERS';
+  return `PLAYWRIGHT_MCP_` + prefix.toUpperCase().replace(/-/g, '_');
+}
+
+/**
  * @param {string} content
  * @returns {Promise<string>}
  */
@@ -177,7 +189,7 @@ async function updateOptions(content) {
   table.push(`|--------|-------------|`);
   for (const option of options) {
     const prefix = option.name.split(' ')[0];
-    const envName = `PLAYWRIGHT_MCP_` + prefix.toUpperCase().replace(/-/g, '_');
+    const envName = optionEnvName(prefix);
     table.push(`| --${option.name} | ${option.value}<br>*env* \`${envName}\` |`);
   }
 
@@ -187,7 +199,7 @@ async function updateOptions(content) {
     envTable.push(`|-------------|`);
     for (const option of options) {
       const prefix = option.name.split(' ')[0];
-      const envName = `PLAYWRIGHT_MCP_` + prefix.toUpperCase().replace(/-/g, '_');
+      const envName = optionEnvName(prefix);
       envTable.push(`| \`${envName}\` ${option.value} |`);
     }
     console.log(envTable.join('\n'));
@@ -223,25 +235,14 @@ async function updateConfig(content) {
   ]);
 }
 
-/**
- * @param {string} filePath
- */
-async function copyToPackage(filePath) {
-  await fs.promises.copyFile(path.join(__dirname, '../../', filePath), path.join(__dirname, filePath));
-  console.log(`${filePath} copied successfully`);
-}
-
 async function updateReadme() {
-  const readmePath = path.join(__dirname, '../../README.md');
+  const readmePath = path.join(__dirname, 'README.md');
   const readmeContent = await fs.promises.readFile(readmePath, 'utf-8');
   const withTools = await updateTools(readmeContent);
   const withOptions = await updateOptions(withTools);
   const withConfig = await updateConfig(withOptions);
   await fs.promises.writeFile(readmePath, withConfig, 'utf-8');
   console.log('README updated successfully');
-
-  await copyToPackage('README.md');
-  await copyToPackage('LICENSE');
 }
 
 updateReadme().catch(err => {

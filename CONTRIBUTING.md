@@ -1,12 +1,19 @@
 # Contributing
 
-## Choose an issue
+## Choosing an Issue
 
-Playwright MCP **requires an issue** for every contribution, except for minor documentation updates.
+To maintain project quality and focus, Playwright **requires a corresponding issue** for every contribution, with the exception of minor documentation fixes.
 
-If you are passionate about a bug/feature, but cannot find an issue describing it, **file an issue first**. This will
-facilitate the discussion, and you might get some early feedback from project maintainers before spending your time on
-creating a pull request.
+If you would like to address a bug or feature that isn't currently listed, **please file a new issue first**. This allows the community and maintainers to provide early feedback and facilitates a discussion before you invest time in developing a pull request.
+
+When submitting an issue, please state clearly if you intend to work on it. Once triaged and approved, the maintainers will determine the best path forward—whether the task should be handled by the **core team**, an **automated agent**, or a **community contributor**. If the issue is assigned to you, you may then proceed with your changes and submit a PR.
+
+### Submission Policy
+To ensure the maintainability of the project, please note the following:
+
+* **Unsolicited PRs:** Pull requests submitted without a linked issue or prior approval will be closed.
+* **Low-Quality AI Contributions:** PRs that do not meet our quality standards or lack human oversight (including low-quality agentic submissions) will be closed without explanation.
+* **Approval Required:** Only proceed with a PR once the issue has been officially assigned to you or approved for community contribution.
 
 ## Make a change
 
@@ -29,11 +36,15 @@ npm run watch
 npx playwright install
 ```
 
-Source code for Playwright MCP is located at [packages/playwright/src/mcp](https://github.com/microsoft/playwright/blob/main/packages/playwright/src/mcp).
+Source code for Playwright MCP is located in the Playwright monorepo:
+
+- [packages/playwright-core/src/tools/mcp](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/tools/mcp)
+- [packages/playwright-core/src/tools/backend](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/tools/backend)
 
 ```bash
 # list source files
-ls -la packages/playwright/src/mcp
+ls -la packages/playwright-core/src/tools/mcp
+ls -la packages/playwright-core/src/tools/backend
 ```
 
 Coding style is fully defined in [eslint.config.mjs](https://github.com/microsoft/playwright/blob/main/eslint.config.mjs). Before creating a pull request, or at any moment during development, run linter to check all kinds of things:
@@ -59,12 +70,12 @@ To run the mcp tests, use
 
 ```bash
 # fast path runs all MCP tests in Chromium
-npm run mcp-ctest
+npm run ctest-mcp
 ```
 
 ```bash
 # slow path runs all tests in three browsers
-npm run mcp-test
+npm run test-mcp
 ```
 
 Since Playwright tests are using Playwright under the hood, everything from our documentation applies, for example [this guide on running and debugging tests](https://playwright.dev/docs/running-tests#running-tests).

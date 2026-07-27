@@ -14,18 +14,9 @@
  * limitations under the License.
  */
 
-import { resolve } from 'path';
-import { defineConfig } from 'vite';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { Config } from './config';
+import type { BrowserContext } from 'playwright';
 
-export default defineConfig({
-  build: {
-    lib: {
-      entry: resolve(__dirname, 'src/background.ts'),
-      fileName: 'lib/background',
-      formats: ['es']
-    },
-    outDir: 'dist',
-    emptyOutDir: false,
-    minify: false
-  }
-});
+export declare function createConnection(config?: Config, contextGetter?: () => Promise<BrowserContext>): Promise<Server>;
+export {};
