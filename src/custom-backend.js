@@ -206,11 +206,11 @@ function createSetEngineTool(engineState) {
       name: 'browser_set_engine',
       title: 'Select browser engine',
       description:
-        'Choose the browser engine for the CURRENT session: "chromium" (default; attaches to the shared system Chrome with its real profile and logins), "firefox", or "webkit". ' +
-        'Switching resets this session\'s open tabs; the next browser_navigate opens in the chosen engine. Chromium and a launched engine (firefox/webkit) can be live at the same time across sessions. ' +
-        'Only call this when you need a non-Chrome browser (e.g. cross-browser testing) — the default is already chromium.',
+        'Choose the browser engine for the CURRENT session: "chromium" (default Chrome for Testing), "chrome" (Google Chrome stable), "firefox", or "webkit". ' +
+        'Switching resets this session\'s open tabs; the next browser action opens in the chosen engine. ' +
+        'Only call this when you need a non-default browser (e.g. cross-browser testing) — the default is already chromium.',
       inputSchema: z.object({
-        engine: z.enum(['chromium', 'firefox', 'webkit']).describe('Browser engine to drive for this session')
+        engine: z.enum(['chromium', 'chrome', 'firefox', 'webkit']).describe('Browser engine to drive for this session')
       }),
       type: 'readOnly'
     },

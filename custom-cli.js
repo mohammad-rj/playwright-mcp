@@ -225,8 +225,13 @@ async function buildLaunchedContext(rawCliOptions, engine) {
   opts.browser = engine;
 
   const config = await resolveCLIConfigForMCP(opts, process.env);
-  const browser = await require('playwright')[engine].launch(config.browser.launchOptions || {});
-  const browserContext = await browser.newContext(config.browser.contextOptions || {});
+  const browserName = config.browser?.browserName || (engine === 'chrome' ? 'chromium' : engine);
+  const launchOptions = { ...(config.browser?.launchOptions || {}) };
+  if (process.getuid && process.getuid() === 0) {
+    launchOptions.chromiumSandbox = false;
+  }
+  const browser = await require('playwright')[browserName].launch(launchOptions);
+  const browserContext = await browser.newContext(config.browser?.contextOptions || {});
 
   // Reset the pool if the user closes the browser window manually.
   try {
@@ -433,9 +438,18 @@ program
         }
       });
 
-      httpServer.listen(port, host, () => {
+      httpServer.listen(port, host, async () => {
         console.error(`[Playwright MCP] SSE server on  http://${host}:${port}/sse`);
         console.error(`[Playwright MCP] Health check:  http://${host}:${port}/health`);
+
+        try {
+          const defaultEngine = cliOptions.browser || 'chromium';
+          console.error(`[Playwright MCP] Pre-warming default session (${defaultEngine})...`);
+          await getEngineContext(defaultEngine, cliOptions, sharedCdpMode);
+          console.error(`[Playwright MCP] Default session ready.`);
+        } catch (e) {
+          console.error(`[Playwright MCP] Pre-warm warning:`, e.message);
+        }
       });
 
       const shutdown = async (signal) => {

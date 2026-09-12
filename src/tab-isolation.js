@@ -151,11 +151,117 @@ function generateTabId() {
 }
 
 /**
- * Schema for tabId parameter - REQUIRED for all tab-aware tools
+ * Schema for tabId parameter - optional for all tab-aware tools (defaults to session tab)
  */
 const tabIdSchema = z.string().length(6).describe(
-  'Tab ID (6-char string) to operate on. REQUIRED. Get this from browser_tabs(action="new").'
+  'Tab ID (6-char string) to operate on. Optional: if omitted, automatically uses the active tab for this session.'
 );
+
+/**
+ * Helper to create a new managed tab with lifecycle listeners and storage
+ */
+async function createManagedTab(context, ownerSessionId = null) {
+  let tabs = typeof context.tabs === 'function' ? context.tabs() : [];
+  let tab;
+
+  // Optimization: Search for any existing blank, unmanaged tab to reuse
+  for (const candidate of tabs) {
+    const page = candidate.page || candidate;
+    const marker = await page.evaluate(m => window[m], MARKER_NAME).catch(() => null);
+    const url = typeof page.url === 'function' ? page.url() : '';
+    const isBlank = (
+      url === 'about:blank' ||
+      url === '' ||
+      url.startsWith('chrome://newtab') ||
+      url.startsWith('chrome://new-tab-page')
+    );
+    if (!marker && isBlank) {
+      tab = candidate;
+      break;
+    }
+  }
+
+  if (!tab) {
+    tab = await context.newTab();
+  }
+
+  const tabId = generateTabId();
+  const page = tab.page || tab;
+
+  if (typeof page.addInitScript === 'function') {
+    await page.addInitScript((m, id, time) => {
+      window[m] = { id, lastActivity: time };
+    }, MARKER_NAME, tabId, Date.now()).catch(() => {});
+    await page.evaluate((m, id, time) => {
+      window[m] = { id, lastActivity: time };
+    }, MARKER_NAME, tabId, Date.now()).catch(() => {});
+  }
+
+  const closeListener = () => {
+    tabRegistry.delete(tabId);
+    saveRegistry();
+  };
+  const loadListener = async () => {
+    const entry = tabRegistry.get(tabId);
+    if (entry) {
+      entry.title = await page.title().catch(() => 'Untitled');
+      saveRegistry();
+      await updateHeartbeat(page, tabId);
+    }
+  };
+
+  tabRegistry.set(tabId, {
+    page: page,
+    tab: tab,
+    createdAt: new Date(),
+    lastActivity: new Date(),
+    title: 'New Tab',
+    ownerSessionId: ownerSessionId,
+    _listeners: { close: closeListener, load: loadListener }
+  });
+
+  saveRegistry();
+
+  page.on('close', closeListener);
+  page.on('load', loadListener);
+
+  return { tabId, tab, page };
+}
+
+/**
+ * Ensure a tab ID exists for the given context and session.
+ * If requestedTabId is valid, returns it. Otherwise returns or creates a session tab.
+ */
+async function ensureSessionTab(context, requestedTabId = null) {
+  if (requestedTabId && typeof requestedTabId === 'string' && requestedTabId.length === 6) {
+    if (tabRegistry.has(requestedTabId)) {
+      return requestedTabId;
+    }
+  }
+
+  const sessionId = sessionIdOf(context);
+  // 1. Look for existing tab owned by this session
+  if (sessionId) {
+    for (const [id, entry] of tabRegistry.entries()) {
+      if (entry.ownerSessionId === sessionId && !entry.isRemote) {
+        if (entry.page && typeof entry.page.isClosed === 'function' && !entry.page.isClosed()) {
+          return id;
+        }
+      }
+    }
+  }
+
+  // 2. Look for ANY active local tab
+  for (const [id, entry] of tabRegistry.entries()) {
+    if (!entry.isRemote && entry.page && typeof entry.page.isClosed === 'function' && !entry.page.isClosed()) {
+      return id;
+    }
+  }
+
+  // 3. None found - auto-create default tab
+  const created = await createManagedTab(context, sessionId);
+  return created.tabId;
+}
 
 /**
  * Get tab by string ID
@@ -238,16 +344,16 @@ function createTabProxyContext(context, tabId) {
 }
 
 /**
- * Wrap a tool to REQUIRE tabId parameter (string)
+ * Wrap a tool to accept optional tabId parameter (defaults to session tab)
  * @param {Object} tool - Original tool definition
- * @returns {Object} Wrapped tool with required tabId
+ * @returns {Object} Wrapped tool
  */
 function wrapToolWithTabId(tool) {
   const originalSchema = tool.schema;
   const originalHandle = tool.handle;
 
   const newInputSchema = originalSchema.inputSchema.extend({
-    tabId: tabIdSchema
+    tabId: tabIdSchema.optional()
   });
 
   return {
@@ -257,12 +363,10 @@ function wrapToolWithTabId(tool) {
       inputSchema: newInputSchema
     },
     handle: async (context, params, response, signal) => {
-      const { tabId, ...restParams } = params;
+      let { tabId, ...restParams } = params;
 
       if (!tabId || typeof tabId !== 'string' || tabId.length !== 6) {
-        throw new Error(
-          'tabId (6-char string) is REQUIRED. First call browser_tabs(action="new") to create a tab and get your tabId.'
-        );
+        tabId = await ensureSessionTab(context, tabId);
       }
 
       const proxyContext = createTabProxyContext(context, tabId);
